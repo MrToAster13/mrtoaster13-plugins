@@ -1,0 +1,20 @@
+{
+  "name": "clear-not-compact",
+  "description": "Clear instead of compact. /handoff distills a session to a durable doc on disk; /resume reads it back into a fresh context. The alternative to /compact.",
+  "version": "1.0.0",
+  "author": {
+    "name": "Elijah Zion"
+  },
+  "homepage": "https://github.com/MrToAster13/clear-not-compact",
+  "repository": "https://github.com/MrToAster13/clear-not-compact",
+  "license": "MIT",
+  "keywords": [
+    "context",
+    "handoff",
+    "resume",
+    "compact",
+    "clear",
+    "workflow",
+    "skills"
+  ]
+}
