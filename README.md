@@ -85,6 +85,14 @@ Plugin skills are namespaced, so you invoke them as
 `/clear-not-compact:handoff` and `/clear-not-compact:resume`. If you'd rather
 have the bare names, use the standalone install above instead.
 
+## Docs
+
+- [`CONTEXT.md`](CONTEXT.md) — the vocabulary: handoff, resume, distill, clear vs compaction.
+- [`docs/adr/`](docs/adr/) — why it's built this way:
+  - [0001 — clear-and-resume, not compaction](docs/adr/0001-clear-and-resume-not-compaction.md)
+  - [0002 — markdown canonical, issue optional](docs/adr/0002-markdown-canonical-issue-optional.md)
+  - [0003 — distribute as both plugin and standalone](docs/adr/0003-distribute-as-plugin-and-standalone.md)
+
 ## When you actually need this
 
 Mostly on models that degrade through compaction. Anthropic's
