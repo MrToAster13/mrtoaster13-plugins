@@ -66,9 +66,13 @@ Copy the two skill folders into your personal skills directory:
 
 ```bash
 # macOS / Linux
+mkdir -p ~/.claude/skills
 cp -r skills/handoff skills/resume ~/.claude/skills/
+```
 
+```powershell
 # Windows (PowerShell)
+New-Item -ItemType Directory -Force $HOME/.claude/skills | Out-Null
 Copy-Item -Recurse skills/handoff, skills/resume $HOME/.claude/skills/
 ```
 
