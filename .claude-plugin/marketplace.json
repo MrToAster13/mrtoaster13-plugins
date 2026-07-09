@@ -7,7 +7,7 @@
   "plugins": [
     {
       "name": "clear-not-compact",
-      "source": "./",
+      "source": "./plugins/clear-not-compact",
       "description": "Clear instead of compact. /handoff distills a session to a durable doc on disk; /resume reads it back into a fresh context.",
       "displayName": "clear-not-compact",
       "category": "workflow",
@@ -16,6 +16,20 @@
         "handoff",
         "resume",
         "compact"
+      ]
+    },
+    {
+      "name": "autonomous-workflows",
+      "source": "./plugins/autonomous-workflows",
+      "description": "Autonomous, evidence-driven workflows. /remediate self-drives a test-verified fix loop; /harden-repos fans out one agent per repo; /mine-provenance audits your portfolio against ground-truth artifacts.",
+      "displayName": "autonomous-workflows",
+      "category": "workflow",
+      "tags": [
+        "autonomous",
+        "remediation",
+        "multi-repo",
+        "provenance",
+        "evidence"
       ]
     }
   ]

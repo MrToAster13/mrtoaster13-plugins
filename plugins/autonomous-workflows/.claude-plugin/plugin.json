@@ -1,0 +1,21 @@
+{
+  "name": "autonomous-workflows",
+  "description": "Autonomous, evidence-driven workflows. /remediate self-drives a test-verified fix loop that can't cheat its way to green; /harden-repos fans out one fresh-context agent per repo; /mine-provenance audits your portfolio against ground-truth git/code/test artifacts.",
+  "version": "0.1.0",
+  "author": {
+    "name": "Elijah Zion"
+  },
+  "homepage": "https://github.com/MrToAster13/mrtoaster13-plugins/tree/main/plugins/autonomous-workflows",
+  "repository": "https://github.com/MrToAster13/mrtoaster13-plugins",
+  "license": "MIT",
+  "keywords": [
+    "autonomous",
+    "remediation",
+    "test-verified",
+    "multi-repo",
+    "hardening",
+    "provenance",
+    "evidence",
+    "workflow"
+  ]
+}
