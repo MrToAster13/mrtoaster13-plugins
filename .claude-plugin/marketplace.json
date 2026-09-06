@@ -22,11 +22,15 @@
     {
       "name": "autonomous-workflows",
       "source": "./plugins/autonomous-workflows",
-      "description": "Autonomous, evidence-driven workflows. /remediate self-drives a test-verified fix loop; /harden-repos fans out one agent per repo; /mine-provenance audits your portfolio against ground-truth artifacts.",
+      "description": "Autonomous, evidence-driven workflows. /factory builds an approved spec into an MVP unattended, ten agents at once with an adversary pass on every diff; /remediate self-drives a test-verified fix loop; /harden-repos fans out one agent per repo; /mine-provenance audits your portfolio against ground-truth artifacts.",
       "displayName": "autonomous-workflows",
       "category": "workflow",
       "tags": [
         "autonomous",
+        "orchestrator",
+        "subagents",
+        "adversarial-review",
+        "linear",
         "remediation",
         "multi-repo",
         "provenance",

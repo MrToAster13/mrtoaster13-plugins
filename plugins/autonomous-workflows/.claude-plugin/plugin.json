@@ -1,7 +1,7 @@
 {
   "name": "autonomous-workflows",
-  "description": "Autonomous, evidence-driven workflows. /remediate self-drives a test-verified fix loop that can't cheat its way to green; /harden-repos fans out one fresh-context agent per repo; /mine-provenance audits your portfolio against ground-truth git/code/test artifacts.",
-  "version": "0.1.0",
+  "description": "Autonomous, evidence-driven workflows. /factory turns an approved spec into an MVP unattended, ten agents at once in isolated worktrees with an adversary pass on every diff; /remediate self-drives a test-verified fix loop that can't cheat its way to green; /harden-repos fans out one fresh-context agent per repo; /mine-provenance audits your portfolio against ground-truth git/code/test artifacts.",
+  "version": "0.2.0",
   "author": {
     "name": "Elijah Zion"
   },
@@ -10,6 +10,11 @@
   "license": "MIT",
   "keywords": [
     "autonomous",
+    "orchestrator",
+    "subagents",
+    "worktree",
+    "adversarial-review",
+    "linear",
     "remediation",
     "test-verified",
     "multi-repo",

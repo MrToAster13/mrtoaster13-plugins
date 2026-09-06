@@ -1,10 +1,20 @@
 # autonomous-workflows
 
-Three Claude Code skills for autonomous, evidence-driven work. Each one runs a long loop on its own, but each is built around a hard rule that stops the usual failure mode of "unattended" agents — faking success, over-reaching, or overclaiming.
+Four Claude Code skills for autonomous, evidence-driven work. Each one runs a long loop on its own, but each is built around a hard rule that stops the usual failure mode of "unattended" agents — faking success, over-reaching, or overclaiming.
 
 They run between human gates, not without them. You approve the plan; the agent does the work; you trigger anything that touches the outside world.
 
 ## The skills
+
+### `/factory` — the unattended ticket loop
+
+Takes an approved spec and builds it into a working MVP without you in the room. It runs `to-spec → to-tickets → implement → code-review` on a loop, orchestrating from your main session so the context never fills: the orchestrator holds only a ledger and one line summaries, and every piece of real work happens in a subagent whose context dies with it.
+
+The rule that makes it usable: **a blocker parks the ticket, it does not stop the run.** Anything reversible in an afternoon gets decided and logged. Anything that would waste work or ship something you did not agree to gets parked as a question, and everything not downstream of it keeps building. You are interrupted once, at the end, with every open question at the same time.
+
+Ten agents run at once, counted across the whole tree. A wider frontier queues and feeds in the moment a slot frees, so the cap slows the run down instead of serialising it by design. Each ticket gets its own git worktree, its own branch, and an adversary pass on its diff before anything merges. Everything lands on one integration branch, and exactly one pull request is left for you to merge.
+
+The target is a prototype that reads like a polished v3 and scopes like a v0.1. `factory-polish` enforces that bar at the end and may not add a feature to reach it.
 
 ### `/remediate` — test-verified fix loop
 
@@ -37,23 +47,29 @@ Transcripts are used only as discovery leads — never as proof. And it never ar
 /plugin install autonomous-workflows@mrtoaster13-plugins
 ```
 
-Plugin skills are namespaced: `/autonomous-workflows:remediate`, `/autonomous-workflows:harden-repos`, `/autonomous-workflows:mine-provenance`.
+Plugin skills are namespaced: `/autonomous-workflows:factory`, `/autonomous-workflows:remediate`, `/autonomous-workflows:harden-repos`, `/autonomous-workflows:mine-provenance`.
 
 ### As standalone skills (bare names)
 
 ```bash
 # macOS / Linux
 mkdir -p ~/.claude/skills
-cp -r skills/remediate skills/harden-repos skills/mine-provenance ~/.claude/skills/
+cp -r skills/factory skills/remediate skills/harden-repos skills/mine-provenance ~/.claude/skills/
 ```
 
 ```powershell
 # Windows (PowerShell)
 New-Item -ItemType Directory -Force $HOME/.claude/skills | Out-Null
-Copy-Item -Recurse skills/remediate, skills/harden-repos, skills/mine-provenance $HOME/.claude/skills/
+Copy-Item -Recurse skills/factory, skills/remediate, skills/harden-repos, skills/mine-provenance $HOME/.claude/skills/
 ```
 
-Restart Claude Code, and you have `/remediate`, `/harden-repos`, `/mine-provenance`.
+Restart Claude Code, and you have `/factory`, `/remediate`, `/harden-repos`, `/mine-provenance`.
+
+## Archive
+
+[`archive/`](archive/) holds skills that were part of this plugin and no longer
+are. Nothing in there loads. `pre-push` lives there now: its stack detection went
+stale, and the work it gated is covered by `/factory` and `/remediate`.
 
 ## The shared philosophy
 
