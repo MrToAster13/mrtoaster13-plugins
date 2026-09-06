@@ -8,10 +8,11 @@
     {
       "name": "clear-not-compact",
       "source": "./plugins/clear-not-compact",
-      "description": "Clear instead of compact. /handoff distills a session to a durable doc on disk; /resume reads it back into a fresh context.",
-      "displayName": "clear-not-compact",
+      "description": "DEPRECATED. Superseded by built-in auto-compaction and 1M-token context. Kept installable so existing installs do not break. /handoff distills a session to a durable doc on disk; /resume reads it back into a fresh context.",
+      "displayName": "clear-not-compact (deprecated)",
       "category": "workflow",
       "tags": [
+        "deprecated",
         "context",
         "handoff",
         "resume",

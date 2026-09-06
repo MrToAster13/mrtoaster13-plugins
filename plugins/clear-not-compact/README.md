@@ -1,5 +1,23 @@
 # clear-not-compact
 
+> **Deprecated. No longer maintained.**
+>
+> This plugin solved a problem that has since been solved better upstream. Claude
+> Code now auto-summarizes context on its own and tells the model it does not need
+> to wrap up early or hand off mid-task, and Opus 5 ships a 1M-token window. The
+> manual persist-then-`/clear` loop below buys little on top of that, and it costs
+> you a round trip every time context fills.
+>
+> The repo stays published so existing installs keep working. Nothing here is
+> being updated. If you want the idea, take the handoff doc template under
+> "What a handoff captures" and write one by hand when you actually need it,
+> usually on a long multi-day build where you want a durable record on disk
+> rather than a summary in a window.
+>
+> Everything below this line is the original README, kept for reference.
+
+---
+
 Two Claude Code skills that replace `/compact` with a cleaner habit: write the
 session's state to disk, `/clear` to an empty context, and read the state back.
 

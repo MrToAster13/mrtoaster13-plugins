@@ -1,7 +1,7 @@
 {
   "name": "clear-not-compact",
-  "description": "Clear instead of compact. /handoff distills a session to a durable doc on disk; /resume reads it back into a fresh context. The alternative to /compact.",
-  "version": "1.0.0",
+  "description": "DEPRECATED, no longer maintained. Superseded by built-in auto-compaction and 1M-token context windows. /handoff distills a session to a durable doc on disk; /resume reads it back into a fresh context.",
+  "version": "1.1.0-deprecated",
   "author": {
     "name": "Elijah Zion"
   },

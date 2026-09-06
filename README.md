@@ -4,9 +4,11 @@ Claude Code workflow plugins by [MrToAster13](https://github.com/MrToAster13). O
 
 ## Plugins
 
-### [`clear-not-compact`](plugins/clear-not-compact/) — clear instead of compact
+### [`clear-not-compact`](plugins/clear-not-compact/) (deprecated)
 
-Replace `/compact` with a cleaner habit: write the session's state to disk, `/clear` to an empty context, and read it back. `/handoff` distills a session into a numbered doc; `/resume` rebuilds context from it. You never work in a degraded context.
+**No longer maintained.** Built-in auto-compaction and a 1M-token context window
+removed the problem this solved. Still installable so existing installs keep
+working. See [its README](plugins/clear-not-compact/README.md) for the why.
 
 ### [`autonomous-workflows`](plugins/autonomous-workflows/) — autonomous, evidence-driven work
 
