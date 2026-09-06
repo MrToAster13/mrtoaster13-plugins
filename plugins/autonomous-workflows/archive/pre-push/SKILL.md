@@ -3,6 +3,17 @@ name: pre-push
 description: Pre-push orchestrator — detect Python/Node stack, then run simplify, review, security, test, commit as gated stages (retry flaky network, chmod +x scripts, stop on real failures). Use when ready to push to main, or on "pre-push", "clean up before pushing", "polish and commit", "finalize", "ship it".
 ---
 
+> **ARCHIVED. Out of date, do not use.**
+>
+> This skill no longer loads: it lives in `archive/`, not `skills/`. Its stack
+> detection is stale, and the work it gated is now covered by `/factory` (which
+> adversarially reviews every diff before merge) and `/remediate` (which owns the
+> test-verified fix loop). See [the archive README](../README.md) for the why.
+>
+> Everything below this line is the original skill, kept for reference.
+
+---
+
 # Pre-Push
 
 Everything you run before pushing to main, once you like the result. Each stage is a **gate**: it passes quietly, or trips on a genuine failure and stops for a fix. Never pushes — stops at the commit and hands back.
