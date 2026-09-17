@@ -1,7 +1,7 @@
 {
   "name": "autonomous-workflows",
-  "description": "Autonomous, evidence-driven workflows. /factory turns an approved spec into an MVP unattended, ten agents at once in isolated worktrees with an adversary pass on every diff; /remediate self-drives a test-verified fix loop that can't cheat its way to green; /harden-repos fans out one fresh-context agent per repo; /mine-provenance audits your portfolio against ground-truth git/code/test artifacts.",
-  "version": "0.2.0",
+  "description": "Autonomous, evidence-driven workflows. /factory turns an approved spec into an MVP unattended, ten agents at once in isolated worktrees with an adversary pass on every diff; /remediate self-drives a test-verified fix loop that can't cheat its way to green; /harden-repos fans out one fresh-context agent per repo; /mine-provenance audits your portfolio against ground-truth git/code/test artifacts. /fleet-health audits every local repo against its live remote and ships only after a yes; /tdd-loop runs a bounded red-green loop with an adversarial review; /batch-run checkpoints a writer-plus-verifier fan-out per unit.",
+  "version": "0.3.0",
   "author": {
     "name": "Elijah Zion"
   },
@@ -21,6 +21,10 @@
     "hardening",
     "provenance",
     "evidence",
-    "workflow"
+    "workflow",
+    "fleet-health",
+    "tdd",
+    "batch",
+    "checkpoint"
   ]
 }

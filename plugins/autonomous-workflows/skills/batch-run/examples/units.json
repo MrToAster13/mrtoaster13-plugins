@@ -1,0 +1,17 @@
+[
+  {
+    "id": "acme-security-analyst",
+    "jd": "<project>/jd/acme-security-analyst.txt",
+    "resume": "<project>/resumes/security-analyst.md"
+  },
+  {
+    "id": "globex-soc-analyst",
+    "jd": "<project>/jd/globex-soc-analyst.txt",
+    "resume": "<project>/resumes/soc-analyst.md"
+  },
+  {
+    "id": "initech-incident-responder",
+    "jd": "<project>/jd/initech-incident-responder.txt",
+    "resume": "<project>/resumes/incident-response-analyst.md"
+  }
+]

@@ -1,6 +1,6 @@
 # autonomous-workflows
 
-Four Claude Code skills for autonomous, evidence-driven work. Each one runs a long loop on its own, but each is built around a hard rule that stops the usual failure mode of "unattended" agents — faking success, over-reaching, or overclaiming.
+Seven Claude Code skills for autonomous, evidence-driven work. Each one runs a bounded loop on its own, and each is built around a hard rule that stops the usual failure mode of "unattended" agents — faking success, over-reaching, or overclaiming.
 
 They run between human gates, not without them. You approve the plan; the agent does the work; you trigger anything that touches the outside world.
 
@@ -38,6 +38,24 @@ Audits a skills/portfolio doc against ground truth and extends it. Every claim i
 
 Transcripts are used only as discovery leads — never as proof. And it never argues with your claims; it sorts them and lets the evidence speak.
 
+### `/fleet-health` — every repo at once
+
+Finds every git repo under your home directory and audits each one against its live remote: ahead/behind, unpushed commits, merged branches still hanging around, and a secret scan over staged and unpushed content (private keys, `AKIA`, `ghp_`, Slack and OpenAI token shapes, `Authorization: Bearer`). Read-only until you say otherwise.
+
+The rule: **it prints the ship command before it runs it.** Every push and branch delete is shown as a copy-pasteable, shell-correct line first, and executed only after an explicit yes per repo. Never a force push.
+
+### `/tdd-loop` — bounded test-first loop
+
+One feature, from failing tests to a commit, without a check-in at every step. Red first (and every new test must fail for the right reason, not on an import error), then a green loop capped at **10 iterations**, each one logged with files touched and pass/fail counts. Two identical failing sets in a row is a hard stop.
+
+Green tests are the input, not the verdict. An adversarial sub-agent then hunts the bugs the tests were written to miss (over-aggressive filters that hide valid results, boundary values, empty inputs); every finding needs a reproducible failure scenario or it is dropped. Each confirmed finding gets a regression test that is watched failing before the fix. It never edits an assertion to make it pass, and it never pushes.
+
+### `/batch-run` — writer plus verifier, checkpointed per unit
+
+Runs N similar work units (documents, resumes, migrations) through a writer agent and an independent verifier agent that never saw the writer's reasoning. Each unit's outcome is written to disk the moment it lands, so a session killed on limits loses only the units in flight, and a resume recomputes the todo list from the checkpoint instead of trusting memory.
+
+The rule: **report from disk, never from the workflow's return value.** Includes a cost estimator that prices the run in dollars and a model menu (downgrade the writer before the verifier; a cheap verifier waves through invented facts). Ships with a Python state machine and its tests.
+
 ## Install
 
 ### As a plugin (managed, updates)
@@ -47,23 +65,25 @@ Transcripts are used only as discovery leads — never as proof. And it never ar
 /plugin install autonomous-workflows@mrtoaster13-plugins
 ```
 
-Plugin skills are namespaced: `/autonomous-workflows:factory`, `/autonomous-workflows:remediate`, `/autonomous-workflows:harden-repos`, `/autonomous-workflows:mine-provenance`.
+Plugin skills are namespaced: `/autonomous-workflows:factory`, `/autonomous-workflows:remediate`, `/autonomous-workflows:harden-repos`, `/autonomous-workflows:mine-provenance`, `/autonomous-workflows:fleet-health`, `/autonomous-workflows:tdd-loop`, `/autonomous-workflows:batch-run`.
 
 ### As standalone skills (bare names)
 
 ```bash
 # macOS / Linux
 mkdir -p ~/.claude/skills
-cp -r skills/factory skills/remediate skills/harden-repos skills/mine-provenance ~/.claude/skills/
+cp -r skills/factory skills/remediate skills/harden-repos skills/mine-provenance skills/fleet-health skills/tdd-loop skills/batch-run ~/.claude/skills/
 ```
 
 ```powershell
 # Windows (PowerShell)
 New-Item -ItemType Directory -Force $HOME/.claude/skills | Out-Null
-Copy-Item -Recurse skills/factory, skills/remediate, skills/harden-repos, skills/mine-provenance $HOME/.claude/skills/
+Copy-Item -Recurse skills/factory, skills/remediate, skills/harden-repos, skills/mine-provenance, skills/fleet-health, skills/tdd-loop, skills/batch-run $HOME/.claude/skills/
 ```
 
-Restart Claude Code, and you have `/factory`, `/remediate`, `/harden-repos`, `/mine-provenance`.
+Restart Claude Code, and you have `/factory`, `/remediate`, `/harden-repos`, `/mine-provenance`, `/fleet-health`, `/tdd-loop`, `/batch-run`.
+
+Standalone `batch-run` note: its `SKILL.md` locates its scripts through `${CLAUDE_PLUGIN_ROOT}`, which only the plugin install sets. For a standalone copy, replace that prefix with the folder you copied it to.
 
 ## Archive
 
