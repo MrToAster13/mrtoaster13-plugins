@@ -200,6 +200,76 @@ def test_duplicate_unit_ids_are_rejected_at_load(tmp_path):
         state.load_units(str(path))
 
 
+def test_a_units_file_with_a_byte_order_mark_loads(tmp_path):
+    path = tmp_path / "units.json"
+    path.write_bytes(b"\xef\xbb\xbf" + json.dumps([{"id": "a"}]).encode("utf-8"))
+    assert state.load_units(str(path)) == [{"id": "a"}]
+
+
+def test_a_units_file_nested_too_deep_is_a_clean_error(tmp_path):
+    path = tmp_path / "units.json"
+    path.write_text("[" * 100_000 + "]" * 100_000, encoding="utf-8")
+    with pytest.raises(ValueError, match="nested too deeply"):
+        state.load_units(str(path))
+
+
+def test_a_record_with_a_byte_order_mark_still_counts_as_verified(batch):
+    units, _, cdir = batch
+    state.record(cdir, "unit-05", "verified")
+    path = state.record_path(cdir, "unit-05")
+    path.write_bytes(b"\xef\xbb\xbf" + path.read_bytes())
+    assert state.read_record(cdir, "unit-05")["status"] == "verified"
+    assert "unit-05" not in {u["id"] for u in state.todo(cdir, units)}
+
+
+def test_a_record_nested_too_deep_reads_as_pending(batch):
+    _, _, cdir = batch
+    state.record(cdir, "unit-06", "verified")
+    state.record_path(cdir, "unit-06").write_text("[" * 100_000 + "]" * 100_000,
+                                                 encoding="utf-8")
+    assert state.read_record(cdir, "unit-06") is None
+
+
+def test_a_lock_nested_too_deep_is_treated_as_stale(batch):
+    _, _, cdir = batch
+    state.lock_path(cdir, "unit-07").parent.mkdir(parents=True, exist_ok=True)
+    state.lock_path(cdir, "unit-07").write_text("[" * 100_000 + "]" * 100_000,
+                                               encoding="utf-8")
+    assert state.claim(cdir, "unit-07", lease_seconds=60) is True
+
+
+def test_a_write_retries_while_windows_reports_the_file_in_use(batch, monkeypatch):
+    _, _, cdir = batch
+    real_replace, calls = os.replace, []
+
+    def busy_twice(src, dst):
+        calls.append(dst)
+        if len(calls) <= 2:
+            raise PermissionError("in use")
+        real_replace(src, dst)
+
+    monkeypatch.setattr(state.os, "replace", busy_twice)
+    state.record(cdir, "unit-08", "verified")
+    assert len(calls) == 3
+    assert state.read_record(cdir, "unit-08")["status"] == "verified"
+
+
+def test_a_read_retries_while_windows_reports_the_file_in_use(batch, monkeypatch):
+    _, _, cdir = batch
+    state.record(cdir, "unit-09", "verified")
+    real_open, calls = open, []
+
+    def busy_once(path, *args, **kwargs):
+        calls.append(path)
+        if len(calls) == 1:
+            raise PermissionError("in use")
+        return real_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(state, "open", busy_once, raising=False)
+    assert state.read_record(cdir, "unit-09")["status"] == "verified"
+    assert len(calls) == 2
+
+
 def test_units_without_an_id_are_rejected_at_load(tmp_path):
     path = tmp_path / "units.json"
     path.write_text(json.dumps([{"jd": "x"}]), encoding="utf-8")
@@ -217,6 +287,17 @@ def run_cli(*argv):
         [sys.executable, str(SCRIPTS / "state.py")] + list(argv),
         stdout=subprocess.PIPE, stderr=subprocess.PIPE,
     )
+
+
+@pytest.mark.parametrize("argv", [
+    ["todo", "--units", "u.json", "--limit", "-1"],
+    ["claim", "--id", "a", "--lease-seconds", "-5"],
+])
+def test_cli_rejects_negative_limits_and_leases(batch, argv):
+    _, _, cdir = batch
+    result = run_cli(*(argv + ["--dir", str(cdir)]))
+    assert result.returncode == 2
+    assert b"must be 0 or more" in result.stderr
 
 
 def test_cli_record_then_report_strict(batch):

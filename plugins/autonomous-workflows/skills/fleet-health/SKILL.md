@@ -74,7 +74,7 @@ repo until the user resolves it.
 The report gives one copy-pasteable block per repo. Rules:
 
 **Detect the shell first.** `$PSVersionTable` exists in PowerShell and does not
-in bash. On this machine the default is PowerShell 7.
+in bash. Do not assume which one you have.
 
 **Never mix shells.** A `\` line continuation is a bash-ism; in PowerShell it
 becomes a literal backslash inside the argument. PowerShell's continuation is a

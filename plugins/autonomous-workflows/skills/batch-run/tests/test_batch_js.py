@@ -136,6 +136,29 @@ def test_model_names_resolve_the_same_in_python_and_javascript(raw):
     assert stage_opts({"verifier": {"model": raw}})["verifier"]["model"] == expected
 
 
+@pytest.mark.parametrize("stage, raw, fallback", [
+    ("worker", "claude-opusx", "haiku"),
+    ("worker", "sonnet-opus", "haiku"),
+    ("worker", "opus-haiku", "haiku"),
+    ("worker", "Opus Sonnet", "haiku"),
+    ("verifier", "haiku-opus", "opus"),
+    ("verifier", "claude-haikux", "opus"),
+])
+def test_a_name_without_exactly_one_allowed_family_word_falls_back(stage, raw, fallback):
+    other = "verifier" if stage == "worker" else "worker"
+    result = stage_opts({stage: {"model": raw}, other: {"model": "opus"}})
+    assert result[stage]["model"] == fallback
+    assert result["logs"] == ["{}: model {} is not allowed, running {}".format(
+        stage, json.dumps(raw), fallback)]
+
+
+def test_a_null_model_with_an_effort_gives_the_reason_python_gives():
+    result = stage_opts({"worker": {"model": "haiku"},
+                         "verifier": {"model": None, "effort": "low"}})
+    assert result["verifier"] == {"model": "opus", "effort": None}
+    assert result["logs"] == ['verifier: effort "low" dropped, no model was named']
+
+
 @pytest.mark.parametrize("raw", [
     " high\t", "\ufeffhigh", "\x85high", "high\x1f", "\u00a0high", "HIGH",
 ])
@@ -169,7 +192,7 @@ def test_every_agent_call_takes_its_options_from_stage_opts():
 
     lines = BATCH_JS.read_text(encoding="utf-8").splitlines()
     code = "\n".join(line for line in lines if not line.lstrip().startswith("//"))
-    calls = [m.end() - 1 for m in re.finditer(r"(?<![\w.])agent\(", code)]
+    calls = [m.end() - 1 for m in re.finditer(r"(?<![\w.$])agent\s*\(", code)]
     assert len(calls) == 2  # the writer and the verifier
     for start in calls:
         args = _call_args(code, start)

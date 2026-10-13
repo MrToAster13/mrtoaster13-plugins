@@ -15,7 +15,7 @@ Clean a whole portfolio in one pass. The point of fanning out — one sub-agent 
    - If neither exists, don't guess and don't scan the whole disk. Ask the user which repos to harden and offer to seed `~/.harden-targets` from their answer.
    - Confirm the resolved list back to the user before spawning anything.
 
-2. **Fan out — one sub-agent per repo, in parallel.** Spawn all agents in a single batch (multiple Agent calls in one message) so they run concurrently. Each agent gets a different repo directory, so there are no file conflicts and no worktree isolation is needed. Give each agent the brief in step 3, with its repo path filled in. Ask each to return a structured report (the shape in step 4). Pass `model: "opus"` on every Agent call so no agent inherits the session model, and never run one on Sonnet.
+2. **Fan out, one sub-agent per repo, in parallel.** Spawn all agents in a single batch (multiple Agent calls in one message) so they run concurrently. Each agent gets a different repo directory, so there are no file conflicts and no worktree isolation is needed. Give each agent the brief in step 3, with its repo path filled in. Ask each to return a structured report (the shape in step 4). Pass `model: "opus"` on every Agent call so no agent inherits the session model, and never run one on Sonnet.
 
 3. **Per-repo agent brief.** Each sub-agent does this, in order, inside its one repo, and stops at the first hard blocker:
    - **Secret scan first.** Grep the working tree and staged content for keys, tokens, `.env` values, credentials, private keys. If anything sensitive is found, **do not stage or commit anything** — record it as a blocker and skip straight to the report. Secrets abort hardening for that repo.

@@ -30,10 +30,12 @@ const {
 // 'us.anthropic.claude-opus-5-5' and 'Opus 5.5' are opus while 'claude-opusx'
 // and 'sonnet-opus' are not allowed. A model that is not allowed falls back to
 // the stage default without its effort, so a stray 'sonnet' from an old config
-// never reaches agent(). Off the Claude API the haiku alias resolves to
-// Haiku 4.5, which has no effort parameter, and nothing here can tell which
-// Haiku the alias will reach, so an effort on haiku is dropped. An effort that
-// is not a known level is dropped too. Each drop is logged once per stage.
+// never reaches agent(). A null model counts as no model, as in estimate.py.
+// Off the Claude API, and under the binary's second alias table, the haiku
+// alias resolves to Haiku 4.5, which has no effort parameter. Nothing here can
+// tell which provider or table a session uses, so an effort on haiku is
+// dropped. An effort that is not a known level is dropped too. Each drop is
+// logged once per stage.
 // Only ASCII whitespace is trimmed, matching estimate.py.
 const ALLOWED_MODELS = ['opus', 'haiku']
 const FAMILIES = ['opus', 'haiku', 'sonnet', 'fable', 'mythos']
@@ -67,7 +69,7 @@ const stageOpts = (stage, label, phase, schema) => {
   const asked = normalizeModel(cfg.model)
   const allowed = ALLOWED_MODELS.includes(asked)
   const model = allowed ? asked : fallback
-  if (!allowed && cfg.model !== undefined) {
+  if (!allowed && cfg.model != null) {
     warnOnce(`${stage}:model`, `${stage}: model ${JSON.stringify(cfg.model)} is not allowed, running ${fallback}`)
   }
   const opts = { label, phase, schema, model }
@@ -75,7 +77,7 @@ const stageOpts = (stage, label, phase, schema) => {
     const shown = JSON.stringify(cfg.effort)
     const level = normalizeEffort(cfg.effort)
     let dropped = null
-    if (!allowed) dropped = cfg.model === undefined ? 'no model was named' : 'it came with a model that is not allowed'
+    if (!allowed) dropped = cfg.model == null ? 'no model was named' : 'it came with a model that is not allowed'
     else if (level === null) dropped = `it is not one of ${EFFORT_LEVELS.join(', ')}`
     else if (model === 'haiku') dropped = 'haiku takes no effort override'
     if (dropped) warnOnce(`${stage}:effort`, `${stage}: effort ${shown} dropped, ${dropped}`)

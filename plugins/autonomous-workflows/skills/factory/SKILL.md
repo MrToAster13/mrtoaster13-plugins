@@ -95,8 +95,9 @@ tailored to the stack from Phase 0. Lanes come from the shape of the actual work
 
 Then try `subagent_type: factory-builder-<lane>`. If that type is not recognised
 because the new definitions have not been picked up yet, fall back to
-`general-purpose` and paste the agent file's body into the prompt. Both work. Say
-which one you are using, once.
+`general-purpose` and paste the agent file's body into the prompt. The pasted
+body loses the file's frontmatter, so pass `model: "opus"` on that call
+yourself. Both work. Say which one you are using, once.
 
 **Models are fixed.** The orchestrator, meaning you, runs on Opus, because
 judgement about what to park and what to dispatch is the one thing that cannot be
@@ -197,7 +198,8 @@ flat number would halt a twenty ticket build partway through for no reason.
 6. Report back: ticket ID, branch, PR number, test counts, subagents spawned,
    decisions taken, questions parked, the secret scan command and its output.
 
-**Then the adversary.** For each green PR, spawn `factory-adversary` on the diff.
+**Then the adversary.** For each green PR, spawn `factory-adversary` on the diff,
+with `model: "opus"`.
 It hunts secrets and logic that is wrong, not style that is unfashionable. It
 reports findings ranked by severity, or reports nothing, which is a valid and
 common answer.
@@ -207,7 +209,8 @@ common answer.
 adversary pass, park the ticket rather than looping a third time.
 
 **Then integrate**, one at a time. Ready PRs queue for the single integrator
-lane. `factory-integrator` re-pulls the integration branch, confirms the suite is
+lane. `factory-integrator`, spawned with `model: "opus"`, re-pulls the
+integration branch, confirms the suite is
 green on that fresh base (CI where it exists, otherwise by running the recorded
 commands itself), marks the PR ready,
 and merges it into the integration branch in blocking graph order. Before deleting
@@ -242,7 +245,8 @@ Never surface a question you could have decided. The parking rules are in
 ## Phase 5: Ship
 
 1. Full suite, typecheck, and lint on the integration branch. Report real counts.
-2. Spawn `factory-polish` against the MVP bar in [closing.md](./closing.md), on
+2. Spawn `factory-polish` with `model: "opus"` against the MVP bar in
+   [closing.md](./closing.md), on
    its own branch cut from the integration branch. Its PR gets an adversary pass
    like any other diff before it merges.
 3. Remove every remaining factory worktree. Confirm `git worktree list` shows only

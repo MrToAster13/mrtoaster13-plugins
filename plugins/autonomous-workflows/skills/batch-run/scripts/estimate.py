@@ -31,16 +31,17 @@ CONFIG_NAME = "batch-config.json"
 # USD per million tokens. Subagents run on Opus or Haiku only, so those are the
 # only two models the menu prices. Each row prices the model the alias resolves
 # to on the Claude API in the newest alias table of Claude Code 2.1.296. Other
-# providers, and older tables in the same binary, serve older models under the
-# same aliases; the Scale section of batch-run/SKILL.md lists them.
+# providers, and a second alias table in the same binary, serve older models
+# under the same aliases; the Scale section of batch-run/SKILL.md lists them.
 PRICES = {
     "opus": {"id": "claude-opus-5-5", "in": 4.00, "out": 20.00, "effort": True},
     # Haiku 5.5 charges the higher pair when a request's prompt is over
     # long_above tokens. Off the Claude API (Bedrock, Vertex, Foundry and the
-    # other providers Claude Code knows) the haiku alias resolves to Haiku 4.5
+    # other providers Claude Code knows), and on every provider under the
+    # binary's second alias table, the haiku alias resolves to Haiku 4.5
     # instead ($1 / $5). Haiku 5.5 takes an effort level and Haiku 4.5 does
-    # not, and nothing here can tell which one the alias will reach, so haiku
-    # is never paired with an effort override.
+    # not. Nothing here can tell which provider or table a session uses, so
+    # haiku is never paired with an effort override.
     "haiku": {"id": "claude-haiku-5-5", "in": 0.10, "out": 0.50,
               "long_above": 100_000, "in_long": 0.50, "out_long": 2.50,
               "effort": False},
@@ -263,7 +264,8 @@ def resolve_choice(choice, projection_options):
     for option in projection_options:
         if option["key"] == choice:
             return option
-    if choice.isdigit():
+    # isdigit alone accepts "\u00b2" and other digits int() cannot read.
+    if choice.isascii() and choice.isdigit():
         index = int(choice) - 1
         if 0 <= index < len(projection_options):
             return projection_options[index]
@@ -312,7 +314,8 @@ def load_config(checkpoint_dir):
     them changes what the batch runs on. Whenever anything changed, the
     corrected record is written back, without "remapped", so the next load
     reports nothing. If that write fails, the last entry of "remapped" says
-    so and the corrected models are still returned.
+    so, even when the change was only a tidy, and the corrected models are
+    still returned.
     """
     path = Path(checkpoint_dir) / CONFIG_NAME
     try:
@@ -347,7 +350,8 @@ def load_config(checkpoint_dir):
             remapped.append("{}: {} -> {}".format(stage, _shown(raw), default))
         if effort is not None:
             level = normalize_effort(effort)
-            # The same reasons, in the same words, that batch.js logs.
+            # The same reasons batch.js logs. The note format differs: batch.js
+            # quotes the value and names only the drops it acts on.
             if model not in PRICES:
                 reason = ("no model was named" if raw is None
                           else "it came with a model that is not allowed")
@@ -372,21 +376,13 @@ def load_config(checkpoint_dir):
         try:
             state._atomic_write_json(path, dict(data))
         except OSError as exc:
-            if remapped:
-                remapped.append("not written back: {}".format(exc))
+            remapped.append("not written back: {}".format(exc))
     if remapped:
         data["remapped"] = remapped
     return data
 
 
-def _at_least(minimum):
-    """An argparse type: an integer no smaller than minimum."""
-    def parse(text):
-        value = int(text)
-        if value < minimum:
-            raise argparse.ArgumentTypeError("must be {} or more, got {}".format(minimum, value))
-        return value
-    return parse
+_at_least = state._at_least
 
 
 def _main(argv=None):

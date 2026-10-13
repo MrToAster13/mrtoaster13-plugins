@@ -77,7 +77,8 @@ looks good returns yes every time.
    dropped. A key other than `model` or `effort` inside a stage was dropped.
    `choice` now names the menu option the stages match, or `custom`.
    The corrected record is written back to the checkpoint, so the next resume
-   loads it clean; if that write failed, the last entry says `not written back`.
+   loads it clean; if that write failed, the last entry says `not written back`,
+   and that entry can be the only one.
    Run on the models `load-config` returned and tell the user each entry in your
    final message.
 
@@ -159,6 +160,23 @@ The workflow sets `opts.model` on every agent rather than inheriting the session
 model, so an Opus session runs 30 Haiku writers and 30 Opus verifiers for 30
 units, not 60 Opus agents.
 
+Claude Code can override that model, and the script cannot see it happen. In
+Claude Code 2.1.296:
+
+- If `CLAUDE_CODE_WORKFLOW_SUBAGENT_MODEL` is set or
+  `CLAUDE_CODE_SUBAGENT_MODEL_FORCE` is on, the workflow runtime ignores the
+  model `agent()` passes and logs `Workflow agent model "..." ignored`.
+- `ANTHROPIC_DEFAULT_OPUS_MODEL` and `ANTHROPIC_DEFAULT_HAIKU_MODEL` point the
+  aliases at whatever model they name.
+- An `availableModels` allowlist that leaves out the model swaps in the newest
+  allowed model in its family, or the parent model.
+- Reading the binary's model resolver, a stage set to `opus` in a session that
+  already runs an Opus model appears to get the session's Opus model. That is
+  unverified; no live run confirmed it.
+
+If any of these apply, the stages may run on another model, Sonnet included,
+and the figures below are for the wrong model.
+
 The menu prices the models the aliases resolve to on the Claude API: Opus 5.5
 at $4 / $20 per million input / output tokens, and Haiku 5.5 at $0.10 / $0.50,
 or $0.50 / $2.50 for a request whose prompt is over 100K tokens. On other
@@ -174,14 +192,18 @@ table of Claude Code 2.1.296:
 - `opus` is Opus 4.6 on Foundry and Opus 4.7 on `gateway`. The binary's own
   price table lists both at $5 / $25, so on those two the Opus share of each
   figure is 80% of the real price. That table was not checked against
-  Anthropic's price page. It also lists no `xhigh` effort for Opus 4.6; the
-  menu only ever sets `low`.
+  Anthropic's price page. It also lists no `xhigh` effort for Opus 4.6. The
+  menu only ever sets `low`, but `load-config` and `batch.js` keep a hand-set
+  `xhigh` or `max` on Opus and pass it through as written.
 
-The same binary also carries older alias tables. One maps `haiku` to Haiku 4.5
-everywhere, and older ones map `opus` to Opus 5, which its price table lists at
-$5 / $25. Under those tables the Haiku share is low on every provider and the
-Opus share is 80% of the real price. Which table a given session uses is
-unverified.
+The same binary also carries a second alias table. It maps `haiku` to Haiku 4.5
+on every provider, and `opus` to Opus 5 everywhere except Foundry (Opus 4.6)
+and `gateway` (Opus 4.7). Its price table lists Opus 5 at $5 / $25. Under that
+table the Haiku share is low on every provider and the Opus share is 80% of the
+real price. Which table a given session uses is unverified.
+
+In fast mode the binary's price table lists Opus 5.5 at $8 / $40, twice the
+menu's figure. Whether workflow agents run in fast mode is unverified.
 
 Haiku 5.5 takes an `effort` level and Haiku 4.5 does not. Nothing in this skill
 can tell which of the two the alias will reach, so `estimate.py` refuses to

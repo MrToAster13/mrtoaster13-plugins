@@ -504,6 +504,27 @@ def test_a_failed_write_back_leaves_no_temp_file(tmp_path, monkeypatch):
     assert sorted(p.name for p in cdir.iterdir()) == [estimate.CONFIG_NAME]
 
 
+def test_a_failed_write_after_only_a_tidy_is_still_reported(tmp_path, monkeypatch):
+    cdir = tmp_path / "checkpoint"
+    write_config(cdir, {"choice": "haiku-write-opus-verify", "worker": "haiku",
+                        "verifier": {"model": "opus"}})
+
+    def deny(src, dst):
+        raise PermissionError("denied")
+
+    monkeypatch.setattr(state.os, "replace", deny)
+    config = estimate.load_config(cdir)
+    assert config["worker"] == {"model": "haiku"}
+    assert config["remapped"] == ["not written back: denied"]
+
+
+@pytest.mark.parametrize("raw", ["\u00b2", "\u0662", "\uff11"])
+def test_a_non_ascii_digit_is_an_unknown_choice(tmp_path, raw):
+    options = estimate.project(make_units(1, tmp_path), SPEC)["options"]
+    with pytest.raises(ValueError, match="unknown choice"):
+        estimate.resolve_choice(raw, options)
+
+
 def test_a_clean_record_is_not_rewritten(tmp_path, monkeypatch):
     projection = estimate.project(make_units(3, tmp_path), SPEC)
     cdir = tmp_path / "checkpoint"
