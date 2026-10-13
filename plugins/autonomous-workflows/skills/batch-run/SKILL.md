@@ -68,6 +68,19 @@ looks good returns yes every time.
 
    First check `load-config`: if a prior run already chose models, reuse them
    silently. A resume must not re-decide something the user already answered.
+   The one exception: if the result carries a `remapped` list, `load-config`
+   corrected the saved record. A stage that named a model no longer allowed (an
+   old Sonnet checkpoint, or a near miss such as `claude-opusx`) moved to that
+   stage's default, Haiku writer or Opus verifier. A spelling such as `Opus 5.5`
+   or `us.anthropic.claude-opus-5-5` became its alias. An effort that is not
+   `low`, `medium`, `high`, `xhigh` or `max`, and any effort on Haiku, was
+   dropped. A key other than `model` or `effort` inside a stage was dropped.
+   `choice` now names the menu option the stages match, or `custom`.
+   The corrected record is written back to the checkpoint, so the next resume
+   loads it clean; if that write failed, the last entry says `not written back`,
+   and that entry can be the only one.
+   Run on the models `load-config` returned and tell the user each entry in your
+   final message.
 
    ```
    python ...\scripts\estimate.py load-config --dir <checkpoint>
@@ -84,8 +97,8 @@ looks good returns yes every time.
    ```
 
    **If you cannot ask** (background run, non-interactive session), do not
-   stall and do not silently downgrade. Run at Sonnet on both stages, and say
-   in your final message that the gate was skipped and why.
+   stall and do not silently downgrade. Run the default (Haiku writer, Opus
+   verifier), and say in your final message that the gate was skipped and why.
 
    Two things the menu encodes that are easy to get wrong:
 
@@ -142,13 +155,66 @@ looks good returns yes every time.
 ## Scale
 
 Concurrency is capped at `min(16, cores - 2)` per run, so a batch of 200 units
-is fine to submit whole. Sonnet is the floor on both stages: the workflow sets
-`opts.model` explicitly rather than inheriting the session model, because
-inheriting would run a 30-unit batch at 60 Opus agents without saying so.
+is fine to submit whole. The default is a Haiku writer and an Opus verifier.
+The workflow sets `opts.model` on every agent rather than inheriting the session
+model. For 30 units, an Opus session runs 30 Haiku writers and 30 Opus
+verifiers on the first attempt, plus one writer and one verifier for every
+retry, rather than 60 or more Opus agents. A writer that dies gets no
+verifier, so its attempt adds a writer only.
 
-Haiku 4.5 rejects the `effort` parameter outright. `estimate.py` refuses to
-build an option that pairs the two, and `batch.js` drops an effort override on
-a Haiku stage rather than passing it through to fail at launch.
+Claude Code can override that model, and the script cannot see it happen. In
+Claude Code 2.1.296:
+
+- If `CLAUDE_CODE_WORKFLOW_SUBAGENT_MODEL` holds anything other than an empty
+  string or `inherit`, or `CLAUDE_CODE_SUBAGENT_MODEL_FORCE` is on, the
+  workflow runtime ignores the model `agent()` passes and logs
+  `Workflow agent model "..." ignored`. The runtime reads the variable with
+  `D.str`, which trims it, so a value made only of spaces counts as unset.
+- `ANTHROPIC_DEFAULT_OPUS_MODEL` and `ANTHROPIC_DEFAULT_HAIKU_MODEL` point the
+  aliases at whatever model they name.
+- An `availableModels` allowlist that leaves out the model swaps in the newest
+  allowed model in its family, or the parent model.
+- Reading the binary's model resolver, a stage set to `opus` in a session that
+  already runs an Opus model appears to get the session's Opus model. That is
+  unverified; no live run confirmed it.
+
+If any of these apply, the stages may run on another model, Sonnet included,
+and the figures below are for the wrong model.
+
+The menu prices the models the aliases resolve to on the Claude API: Opus 5.5
+at $4 / $20 per million input / output tokens, and Haiku 5.5 at $0.10 / $0.50,
+or $0.50 / $2.50 for a request whose prompt is over 100K tokens. On other
+providers Claude Code serves older models under the same aliases. In the alias
+table of Claude Code 2.1.296:
+
+- `haiku` is Haiku 4.5 ($1 / $5) on Amazon Bedrock, Google Vertex AI and
+  Microsoft Foundry, and on the providers that table names only by the ids
+  `mantle`, `anthropic_aws`, `anthropic_google_cloud` and `gateway`. On those
+  providers the Haiku share of each figure is about ten times too low for a
+  prompt of 100K tokens or fewer, and about half the real price above that,
+  where Haiku 4.5 still charges $1 / $5.
+- `opus` is Opus 4.6 on Foundry and Opus 4.7 on `gateway`. The binary's own
+  price table lists both at $5 / $25, so on those two the Opus share of each
+  figure is 80% of the real price. That table was not checked against
+  Anthropic's price page. The binary's model catalog lists no `xhigh` effort
+  for Opus 4.6. The menu only ever sets `low`, but `load-config` and
+  `batch.js` keep a hand-set `xhigh` or `max` on Opus and pass it through
+  after trimming and lowercasing.
+
+The same binary also carries a second alias table. It maps `haiku` to Haiku 4.5
+on every provider, and `opus` to Opus 5 everywhere except Foundry (Opus 4.6)
+and `gateway` (Opus 4.7). Its price table lists Opus 5 at $5 / $25. Under that
+table the Haiku share is low on every provider and the Opus share is 80% of the
+real price. Which table a given session uses is unverified.
+
+The binary's fast-mode price lookup returns $8 / $40 for Opus 5.5, twice the
+menu's figure. Whether workflow agents run in fast mode is unverified.
+
+Haiku 5.5 takes an `effort` level and Haiku 4.5 does not. Nothing in this skill
+can tell which of the two the alias will reach, so `estimate.py` refuses to
+build an option that pairs Haiku with an effort override, `load-config` drops
+one, and `batch.js` drops one on a Haiku stage and logs it rather than passing
+it through.
 
 ## Failure modes worth knowing
 
@@ -160,7 +226,13 @@ a Haiku stage rather than passing it through to fail at launch.
   source material cannot support.
 - **Concurrent runs of the same batch** are not prevented by default. If you
   genuinely need that, wrap each unit in `state.py claim` / `release`. A single
-  workflow run dispatches each unit once and does not need it.
+  workflow run dispatches each unit once and does not need it. `claim` exits 0
+  and prints `claimed` when the caller wins, exits 1 and prints
+  `held-by-another` when it loses, exits 2 on a usage error such as a negative
+  `--lease-seconds`, and exits 3 when it cannot create the lock file. Any other
+  error prints a Python traceback and also exits 1, so check for
+  `held-by-another` on stdout rather than the exit code alone. A stale lock
+  the caller cannot delete reads as held on every call.
 - **Deleting a record file is the supported way to force a redo** of one unit.
 
 ## Layout
@@ -168,6 +240,10 @@ a Haiku stage rather than passing it through to fail at launch.
 - `scripts/state.py` - the checkpoint store and its CLI. The whole invariant lives here.
 - `scripts/handoff.py` - renders a handoff doc from the checkpoint dir, on the way back up.
 - `workflows/batch.js` - the fan-out: write, then refute, with one retry.
-- `tests/test_state.py` - 27 tests, mostly simulated interruptions. Run with
-  `python -m pytest tests/ -q` from the skill dir.
+- `scripts/estimate.py` - the cost projection, the model menu and the saved choice.
+- `tests/test_state.py` - the checkpoint store, mostly simulated interruptions.
+- `tests/test_estimate.py` - the projection, the menu and the saved choice.
+- `tests/test_batch_js.py` - the model and effort rules in `batch.js`, run under
+  node; skipped when node is not on PATH.
+- Run the tests with `python -m pytest tests/ -q` from the skill dir.
 - `examples/` - a runnable units and spec pair.

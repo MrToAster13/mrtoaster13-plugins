@@ -1,6 +1,6 @@
 # Adversarial review brief
 
-The brief handed to the Stage 3 sub-agent. Model: `sonnet`.
+The brief handed to the Stage 3 sub-agent. Model: `opus`.
 
 ## Framing
 

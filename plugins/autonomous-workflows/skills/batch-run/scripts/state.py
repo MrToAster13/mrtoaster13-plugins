@@ -1,9 +1,10 @@
 """Durable per-unit checkpoint store for batch-run.
 
 One small file per work unit under a checkpoint directory, written atomically
-(temp file plus `os.replace`, which is atomic on Windows and POSIX). Parallel
-workers never touch the same file, so there is no shared-file race and no
-locking needed for the record path.
+(temp file plus `os.replace`). Parallel workers never touch the same file, so
+the record path needs no locking. On Windows `os.replace` and `open` fail with
+PermissionError while another process holds the file open, so a write or read
+that hits one retries a few times before giving up.
 
 The invariant this module exists to enforce:
 
@@ -30,6 +31,7 @@ import json
 import os
 import re
 import sys
+import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -37,6 +39,8 @@ from pathlib import Path
 STATUSES = ("pending", "written", "verified", "failed")
 DONE = "verified"
 DEFAULT_LEASE_SECONDS = 1800
+# Seconds to wait between tries when Windows reports the file is in use.
+SHARING_RETRY_DELAYS = (0.01, 0.02, 0.04, 0.08)
 
 _UNSAFE = re.compile(r"[^A-Za-z0-9._-]")
 _MAX_SLUG = 80
@@ -70,14 +74,54 @@ def lock_path(checkpoint_dir, unit_id):
     return Path(checkpoint_dir) / "{}.lock".format(slug_for(unit_id))
 
 
+def _retry_while_in_use(action):
+    """Run action, retrying a PermissionError a few times, then re-raising it."""
+    for delay in SHARING_RETRY_DELAYS:
+        try:
+            return action()
+        except PermissionError:
+            time.sleep(delay)
+    return action()
+
+
+def _read_json(path):
+    """Parse a JSON file. utf-8-sig also reads a file saved with a byte order mark."""
+    def read():
+        with open(path, "r", encoding="utf-8-sig") as fh:
+            return json.load(fh)
+    return _retry_while_in_use(read)
+
+
+def _at_least(minimum, maximum=None):
+    """An argparse type: an integer no smaller than minimum and, when a
+    maximum is given, no larger than it."""
+    def integer(text):
+        value = int(text)
+        if value < minimum:
+            raise argparse.ArgumentTypeError("must be {} or more, got {}".format(minimum, value))
+        if maximum is not None and value > maximum:
+            raise argparse.ArgumentTypeError("must be {} or less, got {}".format(maximum, value))
+        return value
+    return integer
+
+
 def _atomic_write_json(path, payload):
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.parent / "{}.{}.tmp".format(path.name, os.getpid())
-    with open(tmp, "w", encoding="utf-8") as fh:
-        json.dump(payload, fh, indent=2, sort_keys=True)
-        fh.flush()
-        os.fsync(fh.fileno())
-    os.replace(tmp, path)
+    # The process and thread ids keep two writers of one file off the same
+    # temp path. A failed write removes its temp file before re-raising.
+    tmp = path.parent / "{}.{}.{}.tmp".format(path.name, os.getpid(), threading.get_ident())
+    try:
+        with open(tmp, "w", encoding="utf-8") as fh:
+            json.dump(payload, fh, indent=2, sort_keys=True)
+            fh.flush()
+            os.fsync(fh.fileno())
+        _retry_while_in_use(lambda: os.replace(tmp, path))
+    except BaseException:
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+        raise
 
 
 def read_record(checkpoint_dir, unit_id):
@@ -89,9 +133,8 @@ def read_record(checkpoint_dir, unit_id):
     """
     path = record_path(checkpoint_dir, unit_id)
     try:
-        with open(path, "r", encoding="utf-8") as fh:
-            data = json.load(fh)
-    except (OSError, ValueError):
+        data = _read_json(path)
+    except (OSError, ValueError, RecursionError):
         return None
     if not isinstance(data, dict) or data.get("status") not in STATUSES:
         return None
@@ -129,8 +172,10 @@ def record(checkpoint_dir, unit_id, status, artifact=None, reason=None, worker=N
 
 
 def load_units(units_path):
-    with open(units_path, "r", encoding="utf-8") as fh:
-        units = json.load(fh)
+    try:
+        units = _read_json(units_path)
+    except RecursionError:
+        raise ValueError("units file is nested too deeply to read") from None
     if not isinstance(units, list):
         raise ValueError("units file must contain a JSON list")
     seen = set()
@@ -184,29 +229,51 @@ def claim(checkpoint_dir, unit_id, lease_seconds=DEFAULT_LEASE_SECONDS, owner=No
     Only needed when two runs of the same batch could overlap. A single
     workflow run dispatches each unit once, so it does not need this. Leases go
     stale rather than deadlocking: a lock older than `lease_seconds` is assumed
-    to belong to a process that died and gets stolen.
+    to belong to a process that died and gets stolen. The age comes from the
+    lock file's modified time, not its contents, so a lock a winner has created
+    but not yet written still counts as held, and a hand-edited `at` cannot
+    hold a unit forever. A file time a full lease or more ahead of the
+    clock is bogus and counts as stale, so a shorter lease gives up such a
+    lock sooner. A lock whose time cannot be read is left
+    alone, so the caller loses unless the lock is already gone. Two callers
+    that judge the same lock stale at the same moment can both win; the
+    lease length does not prevent that. Keep the lease above a unit's run
+    time so a live holder is not judged stale.
+
+    Creating the lock retries a few times while Windows reports it in use,
+    then raises PermissionError. A directory the caller cannot write to
+    raises too, rather than passing for a lock someone else holds. One
+    exception: if a stale lock is already there and the caller cannot delete
+    it, the claim returns False as if the lock were held, on every call.
     """
     path = lock_path(checkpoint_dir, unit_id)
     path.parent.mkdir(parents=True, exist_ok=True)
     body = json.dumps({"owner": owner or str(os.getpid()), "at": time.time()})
     flags = os.O_CREAT | os.O_EXCL | os.O_WRONLY
+
+    def create():
+        return _retry_while_in_use(lambda: os.open(str(path), flags))
+
     try:
-        fd = os.open(str(path), flags)
+        fd = create()
     except FileExistsError:
         try:
-            age = time.time() - json.loads(path.read_text(encoding="utf-8"))["at"]
-        except (OSError, ValueError, KeyError, TypeError):
-            age = lease_seconds + 1
-        # Strictly less than, so a zero-second lease is always stealable rather
-        # than depending on whether the clock ticked between two calls.
-        if age < lease_seconds:
-            return False
-        try:
-            os.unlink(str(path))
+            age = time.time() - os.path.getmtime(str(path))
         except OSError:
-            pass
+            # The lock vanished or is being deleted. Its age is unknown, so
+            # do not unlink it: that could remove a lock a winner just made.
+            age = None
+        if age is not None:
+            # A zero-second lease is always stealable, even when the file time
+            # reads a little ahead of the clock.
+            if lease_seconds > 0 and -lease_seconds < age < lease_seconds:
+                return False
+            try:
+                os.unlink(str(path))
+            except OSError:
+                pass
         try:
-            fd = os.open(str(path), flags)
+            fd = create()
         except FileExistsError:
             return False
     with os.fdopen(fd, "w") as fh:
@@ -233,7 +300,7 @@ def _main(argv=None):
     p_todo = sub.add_parser("todo", help="print units that are not verified")
     add_dir(p_todo)
     p_todo.add_argument("--units", required=True)
-    p_todo.add_argument("--limit", type=int, default=None)
+    p_todo.add_argument("--limit", type=_at_least(0), default=None)
 
     p_rec = sub.add_parser("record", help="write one unit's status")
     add_dir(p_rec)
@@ -252,7 +319,7 @@ def _main(argv=None):
     p_claim = sub.add_parser("claim", help="take an exclusive lease on a unit")
     add_dir(p_claim)
     p_claim.add_argument("--id", required=True)
-    p_claim.add_argument("--lease-seconds", type=int, default=DEFAULT_LEASE_SECONDS)
+    p_claim.add_argument("--lease-seconds", type=_at_least(0), default=DEFAULT_LEASE_SECONDS)
     p_claim.add_argument("--owner", default=None)
 
     p_rel = sub.add_parser("release", help="drop a lease")
@@ -273,7 +340,12 @@ def _main(argv=None):
         print(json.dumps(summary, indent=2))
         return 0 if (summary["complete"] or not args.strict) else 1
     if args.command == "claim":
-        won = claim(args.dir, args.id, args.lease_seconds, args.owner)
+        try:
+            won = claim(args.dir, args.id, args.lease_seconds, args.owner)
+        except PermissionError as exc:
+            # Exit 3: not 1 (held) and not 2 (argparse's usage error).
+            print("cannot create the lock: {}".format(exc), file=sys.stderr)
+            return 3
         print("claimed" if won else "held-by-another")
         return 0 if won else 1
     if args.command == "release":

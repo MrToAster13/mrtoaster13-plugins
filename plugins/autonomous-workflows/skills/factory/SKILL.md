@@ -46,12 +46,13 @@ A wrong binding writes to the wrong Linear project and is expensive to unpick.
    to the default branch itself.
 3. **Tracker config.** Read `docs/agents/issue-tracker.md` and
    `docs/agents/domain.md`. Missing? Run `/setup-matt-pocock-skills` first.
-4. **Linear.** Resolve the project from the map in the user's `CLAUDE.md`. If the
-   repo is not in that map, ask which project. Never invent one. Confirm the
-   parent or spec issue by ID out loud before writing anything. List the team's
-   existing states and labels, and agree with the user which existing one marks a
-   parked ticket. If none fits, a park lives in the ledger and in a comment on the
-   issue. Never create a state or label to cover the gap.
+4. **Linear.** Resolve the project from the user's repo to project mapping,
+   wherever their setup keeps it. If there is no mapping, or the repo is not in
+   it, ask which project. Never invent one. Confirm the parent or spec issue by
+   ID out loud before writing anything. List the team's existing states and
+   labels, and agree with the user which existing one marks a parked ticket.
+   If none fits, a park lives in the ledger and in a comment on the issue.
+   Never create a state or label to cover the gap.
 5. **GitHub.** Confirm `gh auth status` and that the remote exists. With no
    remote, say so plainly and run in local commit mode rather than inventing a PR
    flow.
@@ -67,9 +68,10 @@ A wrong binding writes to the wrong Linear project and is expensive to unpick.
    ever lives in a worktree that gets deleted.
 8. **Approve the Linear comment template.** Show the user the template from
    [closing.md](./closing.md) once. On approval, agents post filled copies for the
-   rest of the run without asking again. This is the only standing exception to
-   the user's draft first rule, it covers this run only, and it covers progress
-   comments only. Anything outside the template still gets drafted.
+   rest of the run without asking again. If the user keeps a draft first rule
+   for tracker writes, this is the only standing exception to it. It covers this
+   run only, and it covers progress comments only. Anything outside the
+   template still gets drafted.
 
 Report the binding as a short table and wait for a go.
 
@@ -93,15 +95,25 @@ tailored to the stack from Phase 0. Lanes come from the shape of the actual work
 
 Then try `subagent_type: factory-builder-<lane>`. If that type is not recognised
 because the new definitions have not been picked up yet, fall back to
-`general-purpose` and paste the agent file's body into the prompt. Both work. Say
-which one you are using, once.
+`general-purpose` and paste the agent file's body into the prompt. The pasted
+body loses the file's frontmatter, so pass `model: "opus"` on that call
+yourself. Both work. Say which one you are using, once.
 
-**Models are fixed.** The orchestrator, meaning you, runs on Opus, because
-judgement about what to park and what to dispatch is the one thing that cannot be
-delegated. Every agent below you runs `model: sonnet`, with no exceptions:
-builders, adversaries, the integrator, polish, and every one off subagent a
-builder spawns. Do not raise an agent to Opus because a review came back shallow.
-A shallow review is a briefing problem. Fix the brief.
+**Models are fixed.** The orchestrator, meaning you, should run on Opus, because
+judgement about what to park and what to dispatch is the one thing that cannot
+be delegated. This skill cannot switch the session's model, so if the session is
+not on Opus, tell the user before dispatching anything. Every agent below you
+runs `model: opus` too: builders, adversaries, the integrator, and polish. The
+one exception is a one off subagent a builder spawns, which runs on
+`model: haiku` for lookups and mechanical generation and `model: opus` for
+anything else. Pin no effort setting on a Haiku agent. Depending on the provider
+(Bedrock, Vertex, Foundry and others) and on which alias table the Claude Code
+session uses, the `haiku` alias can resolve to Haiku 4.5, which has no effort
+parameter. Never run an agent on Sonnet. The model you pass can still be
+overridden by settings such as `CLAUDE_CODE_SUBAGENT_MODEL_FORCE`; batch-run's
+Scale section lists them, and `CLAUDE_CODE_WORKFLOW_SUBAGENT_MODEL` in that list
+applies only to workflow agents. A shallow review is a briefing problem, not a
+model problem. Fix the brief.
 
 ## Phase 3: The loop
 
@@ -127,7 +139,7 @@ Agent(
   subagent_type: "factory-builder-<lane>",
   isolation: "worktree",
   run_in_background: true,
-  model: "sonnet",
+  model: "opus",
   prompt: <brief from team.md + PRD + CONTEXT.md + ADRs + ticket body>
 )
 ```
@@ -183,7 +195,8 @@ flat number would halt a twenty ticket build partway through for no reason.
 2. Build through `/tdd` at the seams the PRD names. One red green slice at a time.
 3. Spawn one off subagents for self contained work, up to the allowance its brief
    states, never more: reading an unfamiliar library, generating fixtures,
-   scaffolding components.
+   scaffolding components. Name the model on each spawn: `model: "haiku"` for
+   lookups and mechanical generation, `model: "opus"` for anything else.
 4. Typecheck and run affected tests as it goes, the full suite once at the end.
 5. Run the secret scan in [team.md](./team.md), then push and open a draft PR
    against the integration branch using the body template in
@@ -191,7 +204,8 @@ flat number would halt a twenty ticket build partway through for no reason.
 6. Report back: ticket ID, branch, PR number, test counts, subagents spawned,
    decisions taken, questions parked, the secret scan command and its output.
 
-**Then the adversary.** For each green PR, spawn `factory-adversary` on the diff.
+**Then the adversary.** For each green PR, spawn `factory-adversary` on the diff,
+with `model: "opus"`.
 It hunts secrets and logic that is wrong, not style that is unfashionable. It
 reports findings ranked by severity, or reports nothing, which is a valid and
 common answer.
@@ -201,7 +215,8 @@ common answer.
 adversary pass, park the ticket rather than looping a third time.
 
 **Then integrate**, one at a time. Ready PRs queue for the single integrator
-lane. `factory-integrator` re-pulls the integration branch, confirms the suite is
+lane. `factory-integrator`, spawned with `model: "opus"`, re-pulls the
+integration branch, confirms the suite is
 green on that fresh base (CI where it exists, otherwise by running the recorded
 commands itself), marks the PR ready,
 and merges it into the integration branch in blocking graph order. Before deleting
@@ -236,7 +251,8 @@ Never surface a question you could have decided. The parking rules are in
 ## Phase 5: Ship
 
 1. Full suite, typecheck, and lint on the integration branch. Report real counts.
-2. Spawn `factory-polish` against the MVP bar in [closing.md](./closing.md), on
+2. Spawn `factory-polish` with `model: "opus"` against the MVP bar in
+   [closing.md](./closing.md), on
    its own branch cut from the integration branch. Its PR gets an adversary pass
    like any other diff before it merges.
 3. Remove every remaining factory worktree. Confirm `git worktree list` shows only
@@ -245,8 +261,7 @@ Never surface a question you could have decided. The parking rules are in
    with the full ticket list and test counts in the body, and leave it for the
    user. Merging it is their call, not yours.
 5. Post the closing comment on the Linear parent issue and move it to Done.
-6. Write the HTML report to `%TEMP%` per the user's `CLAUDE.md` task completion
-   rules, open it, and give the absolute path.
+6. Write the HTML report to `%TEMP%`, open it, and give the absolute path.
 7. In chat, give the verdict only: tickets shipped, tickets parked, test counts,
    what the user has to decide. The report carries the detail.
 

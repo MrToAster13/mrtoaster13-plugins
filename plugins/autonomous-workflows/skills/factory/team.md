@@ -1,13 +1,14 @@
 # The team
 
 Written into `.claude/agents/` during Phase 2. Four roles, one of them repeated
-per lane. Every agent file uses this frontmatter:
+per lane. Every agent file uses this frontmatter, with `model: opus` for every
+role:
 
 ```markdown
 ---
 name: factory-<role>
 description: <one line, so the orchestrator can pick it>
-model: sonnet
+model: opus
 tools: <the minimum set for the role>
 ---
 ```
@@ -46,8 +47,11 @@ Brief:
 > live agents and your slots were reserved out of it before you started. If the
 > allowance is 0, do the work yourself. Spend a slot on genuinely self contained
 > work only: reading an unfamiliar library's API, generating fixtures or seed
-> data, scaffolding a set of similar components. Spawn them on `model: sonnet`,
-> like you, and report how many you actually used.
+> data, scaffolding a set of similar components. Spawn them on `model: haiku`
+> for lookups and mechanical generation (no effort setting, because some
+> providers still serve Haiku 4.5 under that alias and it has no effort
+> parameter) and `model: opus` for anything else, and report how many you
+> actually used.
 >
 > **Decide, do not ask**, about: naming, file layout, test structure, which
 > already chosen library to reach for, styling detail, error message wording.

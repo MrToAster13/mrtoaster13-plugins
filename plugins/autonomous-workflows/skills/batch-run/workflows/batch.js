@@ -11,8 +11,10 @@ export const meta = {
 // Everything domain-specific arrives through args. The skill reads units.json
 // and spec.md on the outside and passes them in, because workflow scripts have
 // no filesystem access of their own.
-// models defaults to Sonnet on both stages rather than inheriting the session
-// model. Inheriting would silently run a 30-unit batch at 60 Opus agents.
+// With no models, stageOpts runs a Haiku writer and an Opus verifier rather
+// than inheriting the session model. Inheriting would run 30 units in an Opus
+// session as 60 or more Opus agents, and the session model may be one
+// subagents must not run on. stageOpts holds the only copy of those defaults.
 const {
   units = [],
   worker = '',
@@ -20,15 +22,76 @@ const {
   checkpointDir = 'checkpoint',
   statePath = 'state.py',
   maxAttempts = 2,
-  models = { worker: { model: 'sonnet' }, verifier: { model: 'sonnet' } },
+  models = null,
 } = args || {}
 
-// Haiku rejects the effort parameter, so an effort override on it is dropped
-// rather than passed through to fail at agent-launch time.
+// The rules match load_config in estimate.py. A model name maps to an alias
+// when exactly one family word appears in it as a whole word, so
+// 'us.anthropic.claude-opus-5-5' and 'Opus 5.5' are opus while 'claude-opusx'
+// and 'sonnet-opus' are not allowed. A model that is not allowed falls back to
+// the stage default without its effort, so a stray 'sonnet' from an old config
+// never reaches agent(). A null model counts as no model, as in estimate.py.
+// Off the Claude API, and under the binary's second alias table, the haiku
+// alias resolves to Haiku 4.5, which has no effort parameter. Nothing here can
+// tell which provider or table a session uses, so an effort on haiku is
+// dropped. An effort that is not a known level is dropped too. Each drop is
+// logged once per stage.
+// Only ASCII whitespace is trimmed, matching estimate.py.
+const ALLOWED_MODELS = ['opus', 'haiku']
+const FAMILIES = ['opus', 'haiku', 'sonnet', 'fable', 'mythos']
+const EFFORT_LEVELS = ['low', 'medium', 'high', 'xhigh', 'max']
+// A loop rather than a regex, so a long run of inner spaces stays linear.
+const isAsciiSpace = (code) => code === 32 || (code >= 9 && code <= 13)
+const asciiTrim = (text) => {
+  let start = 0
+  let end = text.length
+  while (start < end && isAsciiSpace(text.charCodeAt(start))) start++
+  while (end > start && isAsciiSpace(text.charCodeAt(end - 1))) end--
+  return text.slice(start, end)
+}
+const normalizeModel = (value) => {
+  if (typeof value !== 'string') return null
+  const name = asciiTrim(value).toLowerCase()
+  const found = [...new Set((name.match(/[a-z]+/g) || []).filter((w) => FAMILIES.includes(w)))]
+  return found.length === 1 && ALLOWED_MODELS.includes(found[0]) ? found[0] : name
+}
+const normalizeEffort = (value) => {
+  if (typeof value !== 'string') return null
+  const level = asciiTrim(value).toLowerCase()
+  return EFFORT_LEVELS.includes(level) ? level : null
+}
+const warned = new Set()
+const warnOnce = (key, message) => {
+  if (warned.has(key)) return
+  warned.add(key)
+  log(message)
+}
 const stageOpts = (stage, label, phase, schema) => {
-  const cfg = (models && models[stage]) || { model: 'sonnet' }
-  const opts = { label, phase, schema, model: cfg.model || 'sonnet' }
-  if (cfg.effort && opts.model !== 'haiku') opts.effort = cfg.effort
+  const fallback = stage === 'worker' ? 'haiku' : 'opus'
+  // A models value that is not an object (0, false, '', a list) names nothing.
+  const raw = models && typeof models === 'object' && !Array.isArray(models) ? models[stage] : undefined
+  const isSetting = raw && typeof raw === 'object' && !Array.isArray(raw)
+  if (raw !== undefined && raw !== null && typeof raw !== 'string' && !isSetting) {
+    warnOnce(`${stage}:model`, `${stage}: ${JSON.stringify(raw)} is not a model setting, running ${fallback}`)
+  }
+  const cfg = typeof raw === 'string' ? { model: raw } : (isSetting ? raw : {})
+  const asked = normalizeModel(cfg.model)
+  const allowed = ALLOWED_MODELS.includes(asked)
+  const model = allowed ? asked : fallback
+  if (!allowed && cfg.model != null) {
+    warnOnce(`${stage}:model`, `${stage}: model ${JSON.stringify(cfg.model)} is not allowed, running ${fallback}`)
+  }
+  const opts = { label, phase, schema, model }
+  if (cfg.effort !== undefined && cfg.effort !== null) {
+    const shown = JSON.stringify(cfg.effort)
+    const level = normalizeEffort(cfg.effort)
+    let dropped = null
+    if (!allowed) dropped = cfg.model == null ? 'no model was named' : 'it came with a model that is not allowed'
+    else if (level === null) dropped = `it is not one of ${EFFORT_LEVELS.join(', ')}`
+    else if (model === 'haiku') dropped = 'haiku takes no effort override'
+    if (dropped) warnOnce(`${stage}:effort`, `${stage}: effort ${shown} dropped, ${dropped}`)
+    else opts.effort = level
+  }
   return opts
 }
 

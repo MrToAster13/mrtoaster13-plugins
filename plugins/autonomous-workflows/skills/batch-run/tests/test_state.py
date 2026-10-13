@@ -11,6 +11,7 @@ import json
 import os
 import subprocess
 import sys
+import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -200,6 +201,186 @@ def test_duplicate_unit_ids_are_rejected_at_load(tmp_path):
         state.load_units(str(path))
 
 
+def test_a_units_file_with_a_byte_order_mark_loads(tmp_path):
+    path = tmp_path / "units.json"
+    path.write_bytes(b"\xef\xbb\xbf" + json.dumps([{"id": "a"}]).encode("utf-8"))
+    assert state.load_units(str(path)) == [{"id": "a"}]
+
+
+def test_a_units_file_nested_too_deep_is_a_clean_error(tmp_path):
+    path = tmp_path / "units.json"
+    path.write_text("[" * 100_000 + "]" * 100_000, encoding="utf-8")
+    with pytest.raises(ValueError, match="nested too deeply") as caught:
+        state.load_units(str(path))
+    # One error, not a RecursionError traceback chained in front of it.
+    assert caught.value.__suppress_context__
+
+
+def test_a_record_with_a_byte_order_mark_still_counts_as_verified(batch):
+    units, _, cdir = batch
+    state.record(cdir, "unit-05", "verified")
+    path = state.record_path(cdir, "unit-05")
+    path.write_bytes(b"\xef\xbb\xbf" + path.read_bytes())
+    assert state.read_record(cdir, "unit-05")["status"] == "verified"
+    assert "unit-05" not in {u["id"] for u in state.todo(cdir, units)}
+
+
+def test_a_record_nested_too_deep_reads_as_pending(batch):
+    _, _, cdir = batch
+    state.record(cdir, "unit-06", "verified")
+    state.record_path(cdir, "unit-06").write_text("[" * 100_000 + "]" * 100_000,
+                                                 encoding="utf-8")
+    assert state.read_record(cdir, "unit-06") is None
+
+
+@pytest.mark.parametrize("body", [
+    "", "{", "[" * 100_000 + "]" * 100_000, '{"at": "x"}', '{"at": 1e999}',
+    '{"at": 99999999999}',
+], ids=["empty", "truncated", "deep", "text-at", "infinite-at", "future-at-field"])
+def test_a_lock_is_aged_by_its_file_time_not_its_contents(batch, body):
+    _, _, cdir = batch
+    path = state.lock_path(cdir, "unit-07")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(body, encoding="utf-8")
+    # Fresh: a winner may have created it and not written it yet.
+    assert state.claim(cdir, "unit-07", lease_seconds=60) is False
+    old = time.time() - 120
+    os.utime(str(path), (old, old))
+    assert state.claim(cdir, "unit-07", lease_seconds=60) is True
+
+
+def test_a_zero_lease_is_stealable_even_with_a_file_time_ahead_of_the_clock(batch):
+    _, _, cdir = batch
+    assert state.claim(cdir, "unit-08") is True
+    path = state.lock_path(cdir, "unit-08")
+    ahead = time.time() + 30
+    os.utime(str(path), (ahead, ahead))
+    assert state.claim(cdir, "unit-08", lease_seconds=0) is True
+
+
+@pytest.mark.parametrize("lease", [60, 0], ids=["lease-60", "lease-0"])
+def test_a_lock_whose_time_cannot_be_read_is_left_alone(batch, monkeypatch, lease):
+    _, _, cdir = batch
+    assert state.claim(cdir, "unit-09") is True
+    path = state.lock_path(cdir, "unit-09")
+    old = time.time() - 3600
+    os.utime(str(path), (old, old))
+
+    def vanished(_path):
+        raise FileNotFoundError(_path)
+
+    monkeypatch.setattr(state.os.path, "getmtime", vanished)
+    # Stale on disk, but the caller cannot see that, so it must not unlink.
+    # A zero lease steals any lock it can age, but not one it cannot.
+    assert state.claim(cdir, "unit-09", lease_seconds=lease) is False
+    assert path.exists()
+
+
+@pytest.mark.parametrize("seconds_ahead, won", [
+    (30, False),        # clock skew within the lease: still held
+    (10 ** 9, True),    # decades ahead: a bogus time, so stale
+], ids=["skew", "far-future"])
+def test_a_lock_dated_ahead_of_the_clock_is_held_only_within_a_lease(
+        batch, seconds_ahead, won):
+    _, _, cdir = batch
+    assert state.claim(cdir, "unit-11") is True
+    path = state.lock_path(cdir, "unit-11")
+    ahead = time.time() + seconds_ahead
+    os.utime(str(path), (ahead, ahead))
+    assert state.claim(cdir, "unit-11", lease_seconds=60) is won
+
+
+@pytest.mark.parametrize("busy_on", [1, 2], ids=["first-open", "retry-open"])
+def test_a_lock_windows_reports_in_use_for_a_moment_is_retried(batch, monkeypatch, busy_on):
+    _, _, cdir = batch
+    assert state.claim(cdir, "unit-10") is True
+    path = state.lock_path(cdir, "unit-10")
+    old = time.time() - 3600
+    os.utime(str(path), (old, old))
+    real_open, calls = os.open, []
+
+    def busy(target, flags, *rest):
+        calls.append(target)
+        if len(calls) == busy_on:
+            raise PermissionError(13, "in use", target)
+        return real_open(target, flags, *rest)
+
+    monkeypatch.setattr(state.os, "open", busy)
+    assert state.claim(cdir, "unit-10", lease_seconds=60) is True
+    assert len(calls) == 3
+
+
+def test_a_stale_lock_the_caller_cannot_delete_reads_as_held(batch, monkeypatch):
+    _, _, cdir = batch
+    assert state.claim(cdir, "unit-13") is True
+    path = state.lock_path(cdir, "unit-13")
+    old = time.time() - 3600
+    os.utime(str(path), (old, old))
+
+    def denied(target):
+        raise PermissionError(13, "Permission denied", target)
+
+    monkeypatch.setattr(state.os, "unlink", denied)
+    # The documented exception: no raise, just a loss, on every call.
+    assert state.claim(cdir, "unit-13", lease_seconds=60) is False
+    assert state.claim(cdir, "unit-13", lease_seconds=60) is False
+    assert path.exists()
+
+
+def _always_denied(target, flags, *rest):
+    raise PermissionError(13, "Permission denied", target)
+
+
+def test_a_lock_that_stays_denied_raises_instead_of_reading_as_held(batch, monkeypatch):
+    _, _, cdir = batch
+    monkeypatch.setattr(state, "SHARING_RETRY_DELAYS", (0,))
+    monkeypatch.setattr(state.os, "open", _always_denied)
+    with pytest.raises(PermissionError):
+        state.claim(cdir, "unit-12")
+
+
+def test_the_claim_cli_exits_3_when_the_lock_cannot_be_created(batch, monkeypatch, capsys):
+    _, _, cdir = batch
+    monkeypatch.setattr(state, "SHARING_RETRY_DELAYS", (0,))
+    monkeypatch.setattr(state.os, "open", _always_denied)
+    assert state._main(["claim", "--dir", str(cdir), "--id", "unit-12"]) == 3
+    out = capsys.readouterr()
+    assert "held-by-another" not in out.out
+    assert "cannot create the lock" in out.err
+
+
+def test_a_write_retries_while_windows_reports_the_file_in_use(batch, monkeypatch):
+    _, _, cdir = batch
+    real_replace, calls = os.replace, []
+
+    def busy_twice(src, dst):
+        calls.append(dst)
+        if len(calls) <= 2:
+            raise PermissionError("in use")
+        real_replace(src, dst)
+
+    monkeypatch.setattr(state.os, "replace", busy_twice)
+    state.record(cdir, "unit-08", "verified")
+    assert len(calls) == 3
+    assert state.read_record(cdir, "unit-08")["status"] == "verified"
+
+
+def test_a_read_retries_while_windows_reports_the_file_in_use(batch, monkeypatch):
+    _, _, cdir = batch
+    state.record(cdir, "unit-09", "verified")
+    real_open, calls = open, []
+
+    def busy_once(path, *args, **kwargs):
+        calls.append(path)
+        if len(calls) == 1:
+            raise PermissionError("in use")
+        return real_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(state, "open", busy_once, raising=False)
+    assert state.read_record(cdir, "unit-09")["status"] == "verified"
+    assert len(calls) == 2
+
+
 def test_units_without_an_id_are_rejected_at_load(tmp_path):
     path = tmp_path / "units.json"
     path.write_text(json.dumps([{"jd": "x"}]), encoding="utf-8")
@@ -217,6 +398,17 @@ def run_cli(*argv):
         [sys.executable, str(SCRIPTS / "state.py")] + list(argv),
         stdout=subprocess.PIPE, stderr=subprocess.PIPE,
     )
+
+
+@pytest.mark.parametrize("argv", [
+    ["todo", "--units", "u.json", "--limit", "-1"],
+    ["claim", "--id", "a", "--lease-seconds", "-5"],
+])
+def test_cli_rejects_negative_limits_and_leases(batch, argv):
+    _, _, cdir = batch
+    result = run_cli(*(argv + ["--dir", str(cdir)]))
+    assert result.returncode == 2
+    assert b"must be 0 or more" in result.stderr
 
 
 def test_cli_record_then_report_strict(batch):
@@ -294,13 +486,13 @@ def test_verifying_keeps_the_artifact_path_the_writer_recorded(tmp_path):
     succeeds, so a finished batch has nothing on disk saying where its outputs
     went.
     """
-    state.record(str(tmp_path), "alpha", "written", artifact=r"C:\out\alpha.md", worker="sonnet")
+    state.record(str(tmp_path), "alpha", "written", artifact=r"C:\out\alpha.md", worker="haiku")
     state.record(str(tmp_path), "alpha", "verified", reason="holds up")
 
     rec = state.read_record(str(tmp_path), "alpha")
     assert rec["status"] == "verified"
     assert rec["artifact"] == r"C:\out\alpha.md"
-    assert rec["worker"] == "sonnet"
+    assert rec["worker"] == "haiku"
     assert rec["reason"] == "holds up"
 
 
