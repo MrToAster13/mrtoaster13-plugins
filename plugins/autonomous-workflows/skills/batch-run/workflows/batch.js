@@ -11,9 +11,10 @@ export const meta = {
 // Everything domain-specific arrives through args. The skill reads units.json
 // and spec.md on the outside and passes them in, because workflow scripts have
 // no filesystem access of their own.
-// models defaults to a Haiku writer and an Opus verifier rather than inheriting
-// the session model. Inheriting would silently run a 30-unit batch at 60 Opus
-// agents, and the session model may be one subagents must not run on.
+// With no models, stageOpts runs a Haiku writer and an Opus verifier rather
+// than inheriting the session model. Inheriting would silently run a 30-unit
+// batch at 60 Opus agents, and the session model may be one subagents must not
+// run on. stageOpts holds the only copy of those defaults.
 const {
   units = [],
   worker = '',
@@ -21,7 +22,7 @@ const {
   checkpointDir = 'checkpoint',
   statePath = 'state.py',
   maxAttempts = 2,
-  models = { worker: { model: 'haiku' }, verifier: { model: 'opus' } },
+  models = null,
 } = args || {}
 
 // The rules match load_config in estimate.py. A model name maps to an alias
@@ -30,21 +31,23 @@ const {
 // and 'sonnet-opus' are not allowed. A model that is not allowed falls back to
 // the stage default without its effort, so a stray 'sonnet' from an old config
 // never reaches agent(). Off the Claude API the haiku alias resolves to
-// Haiku 4.5, which has no effort parameter, so an effort on haiku is dropped.
-// An effort that is not a known level is dropped too. Each drop is logged once
-// per stage.
+// Haiku 4.5, which has no effort parameter, and nothing here can tell which
+// Haiku the alias will reach, so an effort on haiku is dropped. An effort that
+// is not a known level is dropped too. Each drop is logged once per stage.
+// Only ASCII whitespace is trimmed, matching estimate.py.
 const ALLOWED_MODELS = ['opus', 'haiku']
 const FAMILIES = ['opus', 'haiku', 'sonnet', 'fable', 'mythos']
 const EFFORT_LEVELS = ['low', 'medium', 'high', 'xhigh', 'max']
+const asciiTrim = (text) => text.replace(/^[ \t\n\r\f\v]+|[ \t\n\r\f\v]+$/g, '')
 const normalizeModel = (value) => {
   if (typeof value !== 'string') return null
-  const name = value.trim().toLowerCase()
+  const name = asciiTrim(value).toLowerCase()
   const found = [...new Set((name.match(/[a-z]+/g) || []).filter((w) => FAMILIES.includes(w)))]
   return found.length === 1 && ALLOWED_MODELS.includes(found[0]) ? found[0] : name
 }
 const normalizeEffort = (value) => {
   if (typeof value !== 'string') return null
-  const level = value.trim().toLowerCase()
+  const level = asciiTrim(value).toLowerCase()
   return EFFORT_LEVELS.includes(level) ? level : null
 }
 const warned = new Set()
@@ -56,7 +59,11 @@ const warnOnce = (key, message) => {
 const stageOpts = (stage, label, phase, schema) => {
   const fallback = stage === 'worker' ? 'haiku' : 'opus'
   const raw = models && models[stage]
-  const cfg = typeof raw === 'string' ? { model: raw } : (raw && typeof raw === 'object' ? raw : {})
+  const isSetting = raw && typeof raw === 'object' && !Array.isArray(raw)
+  if (raw !== undefined && raw !== null && typeof raw !== 'string' && !isSetting) {
+    warnOnce(`${stage}:model`, `${stage}: ${JSON.stringify(raw)} is not a model setting, running ${fallback}`)
+  }
+  const cfg = typeof raw === 'string' ? { model: raw } : (isSetting ? raw : {})
   const asked = normalizeModel(cfg.model)
   const allowed = ALLOWED_MODELS.includes(asked)
   const model = allowed ? asked : fallback

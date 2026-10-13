@@ -74,7 +74,8 @@ looks good returns yes every time.
    stage's default, Haiku writer or Opus verifier. A spelling such as `Opus 5.5`
    or `us.anthropic.claude-opus-5-5` became its alias. An effort that is not
    `low`, `medium`, `high`, `xhigh` or `max`, and any effort on Haiku, was
-   dropped. `choice` now names the menu option the stages match, or `custom`.
+   dropped. A key other than `model` or `effort` inside a stage was dropped.
+   `choice` now names the menu option the stages match, or `custom`.
    The corrected record is written back to the checkpoint, so the next resume
    loads it clean; if that write failed, the last entry says `not written back`.
    Run on the models `load-config` returned and tell the user each entry in your
@@ -168,15 +169,25 @@ table of Claude Code 2.1.296:
   Microsoft Foundry, and on the providers that table names only by the ids
   `mantle`, `anthropic_aws`, `anthropic_google_cloud` and `gateway`. On those
   providers the Haiku share of each figure is about ten times too low for a
-  prompt of 100K tokens or fewer, and about half the real price above that.
-- `opus` is Opus 4.6 on Foundry and Opus 4.7 on `gateway`. Their prices are
-  unverified here, so the Opus share of each figure is unverified on those two.
+  prompt of 100K tokens or fewer, and about half the real price above that,
+  where Haiku 4.5 still charges $1 / $5.
+- `opus` is Opus 4.6 on Foundry and Opus 4.7 on `gateway`. The binary's own
+  price table lists both at $5 / $25, so on those two the Opus share of each
+  figure is 80% of the real price. That table was not checked against
+  Anthropic's price page. It also lists no `xhigh` effort for Opus 4.6; the
+  menu only ever sets `low`.
 
-The same binary also carries older alias tables, one of which maps `haiku` to
-Haiku 4.5 everywhere. Which table a given session uses is unverified. Haiku 4.5
-has no `effort` parameter, so `estimate.py` refuses to build an option that
-pairs Haiku with an effort override, `load-config` drops one, and `batch.js`
-drops one on a Haiku stage and logs it rather than passing it through.
+The same binary also carries older alias tables. One maps `haiku` to Haiku 4.5
+everywhere, and older ones map `opus` to Opus 5, which its price table lists at
+$5 / $25. Under those tables the Haiku share is low on every provider and the
+Opus share is 80% of the real price. Which table a given session uses is
+unverified.
+
+Haiku 5.5 takes an `effort` level and Haiku 4.5 does not. Nothing in this skill
+can tell which of the two the alias will reach, so `estimate.py` refuses to
+build an option that pairs Haiku with an effort override, `load-config` drops
+one, and `batch.js` drops one on a Haiku stage and logs it rather than passing
+it through.
 
 ## Failure modes worth knowing
 

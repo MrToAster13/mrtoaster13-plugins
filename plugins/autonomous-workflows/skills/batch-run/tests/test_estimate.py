@@ -1,9 +1,10 @@
 """Tests for the cost gate.
 
-The projection itself is an assumption and not worth asserting precisely. What
-is worth asserting: the gate fires at the right size, the menu never pairs an
-effort override with a model that rejects it, and the chosen models survive to
-the resume.
+The output sizes are assumptions, so the dollar figures are not asserted to the
+cent. What is asserted: the gate fires at the right size, each request is priced
+at its own Haiku tier, the menu never pairs an effort override with a model that
+rejects it, and the chosen models survive to the resume in a record that
+load_config keeps clean.
 """
 
 from __future__ import annotations
@@ -194,7 +195,7 @@ def test_an_old_sonnet_config_is_remapped_and_flagged(tmp_path):
     assert config["remapped"] == [
         "worker: sonnet -> haiku",
         "verifier: sonnet -> opus",
-        "verifier: effort low dropped with the old model",
+        "verifier: effort low dropped, it came with a model that is not allowed",
         "choice: sonnet-both -> haiku-write-opus-verify",
     ]
     # The old menu key no longer exists, so the record names the one that matches.
@@ -385,10 +386,10 @@ def test_load_config_rejects_a_near_miss_and_maps_a_provider_id(tmp_path, raw, m
     ("LOW", "low", "verifier: effort LOW -> low"),
     (" max ", "max", "verifier: effort  max  -> max"),
     ("xhigh", "xhigh", None),
-    ("turbo", None, "verifier: effort turbo dropped, not one of low, medium, high, xhigh, max"),
-    ("", None, "verifier: effort  dropped, not one of low, medium, high, xhigh, max"),
-    (3, None, "verifier: effort 3 dropped, not one of low, medium, high, xhigh, max"),
-    (True, None, "verifier: effort true dropped, not one of low, medium, high, xhigh, max"),
+    ("turbo", None, "verifier: effort turbo dropped, it is not one of low, medium, high, xhigh, max"),
+    ("", None, "verifier: effort  dropped, it is not one of low, medium, high, xhigh, max"),
+    (3, None, "verifier: effort 3 dropped, it is not one of low, medium, high, xhigh, max"),
+    (True, None, "verifier: effort true dropped, it is not one of low, medium, high, xhigh, max"),
     (None, None, None),
 ])
 def test_an_invalid_effort_is_dropped_and_reported(tmp_path, effort, kept, note):
@@ -421,7 +422,8 @@ def test_each_unit_is_priced_on_its_own_prompt(tmp_path):
         return next(o["cost_usd"] for o in options if o["key"] == "haiku-both")
 
     alone = sum(haiku_both([unit]) for unit in units)
-    assert haiku_both(units) == pytest.approx(alone, abs=0.02)
+    # Each figure is rounded to the cent, so allow half a cent per figure summed.
+    assert haiku_both(units) == pytest.approx(alone, abs=0.005 * (len(units) + 1))
     # The big unit alone is priced at $0.50 per million input tokens, both stages.
     assert haiku_both(units[:1]) >= round(2 * 150_000 * 0.50 / 1e6, 2)
 
@@ -486,6 +488,132 @@ def test_a_failed_write_back_is_reported_and_the_models_still_load(tmp_path, mon
     # The file is untouched, so the next load reports the same remap again.
     raw = json.loads((cdir / estimate.CONFIG_NAME).read_text(encoding="utf-8"))
     assert raw["worker"] == {"model": "sonnet"}
+
+
+def test_a_failed_write_back_leaves_no_temp_file(tmp_path, monkeypatch):
+    cdir = tmp_path / "checkpoint"
+    write_config(cdir, {"choice": "sonnet-both", "worker": {"model": "sonnet"},
+                        "verifier": {"model": "opus"}})
+
+    def deny(src, dst):
+        raise PermissionError("denied")
+
+    monkeypatch.setattr(state.os, "replace", deny)
+    config = estimate.load_config(cdir)
+    assert config["remapped"][-1] == "not written back: denied"
+    assert sorted(p.name for p in cdir.iterdir()) == [estimate.CONFIG_NAME]
+
+
+def test_a_clean_record_is_not_rewritten(tmp_path, monkeypatch):
+    projection = estimate.project(make_units(3, tmp_path), SPEC)
+    cdir = tmp_path / "checkpoint"
+    estimate.save_config(cdir, "opus-low-effort", projection["options"])
+
+    def refuse(path, payload):
+        raise AssertionError("a clean record was rewritten")
+
+    monkeypatch.setattr(estimate.state, "_atomic_write_json", refuse)
+    assert "remapped" not in estimate.load_config(cdir)
+
+
+def test_extra_stage_keys_are_reported_and_written_back(tmp_path):
+    cdir = tmp_path / "checkpoint"
+    write_config(cdir, {"choice": "haiku-write-opus-verify",
+                        "worker": {"model": "haiku", "maxTurns": 5, "label": "w"},
+                        "verifier": {"model": "opus"}})
+    config = estimate.load_config(cdir)
+    assert config["worker"] == {"model": "haiku"}
+    assert config["remapped"] == ["worker: key label dropped", "worker: key maxTurns dropped"]
+    on_disk = json.loads((cdir / estimate.CONFIG_NAME).read_text(encoding="utf-8"))
+    assert on_disk["worker"] == {"model": "haiku"}
+    assert "remapped" not in estimate.load_config(cdir)
+
+
+@pytest.mark.parametrize("extra", [
+    {"remapped": ["worker: sonnet -> haiku"]},
+    {"worker": {"model": "haiku", "effort": None}},
+    {"worker": "haiku"},
+])
+def test_a_tidy_with_nothing_to_report_is_still_written_back(tmp_path, extra):
+    clean = {"choice": "haiku-write-opus-verify", "worker": {"model": "haiku"},
+             "verifier": {"model": "opus"}}
+    cdir = tmp_path / "checkpoint"
+    write_config(cdir, dict(clean, **extra))
+    assert "remapped" not in estimate.load_config(cdir)
+    on_disk = json.loads((cdir / estimate.CONFIG_NAME).read_text(encoding="utf-8"))
+    assert on_disk == clean
+
+
+def test_an_effort_with_no_model_gives_the_reason_batch_js_gives(tmp_path):
+    cdir = tmp_path / "checkpoint"
+    write_config(cdir, {"choice": "haiku-write-opus-verify", "worker": {"model": "haiku"},
+                        "verifier": {"effort": "low"}})
+    config = estimate.load_config(cdir)
+    assert config["verifier"] == {"model": "opus"}
+    assert config["remapped"] == ["verifier: null -> opus",
+                                  "verifier: effort low dropped, no model was named"]
+
+
+def test_a_config_saved_with_a_byte_order_mark_still_loads(tmp_path):
+    cdir = tmp_path / "checkpoint"
+    cdir.mkdir()
+    body = json.dumps({"choice": "opus-both", "worker": {"model": "opus"},
+                       "verifier": {"model": "opus"}})
+    (cdir / estimate.CONFIG_NAME).write_bytes(b"\xef\xbb\xbf" + body.encode("utf-8"))
+    config = estimate.load_config(cdir)
+    assert config["choice"] == "opus-both"
+    assert "remapped" not in config
+
+
+def test_a_config_nested_too_deep_reads_as_no_choice(tmp_path):
+    cdir = tmp_path / "checkpoint"
+    cdir.mkdir()
+    depth = 100_000
+    (cdir / estimate.CONFIG_NAME).write_text(
+        '{"worker": ' + "[" * depth + "]" * depth + ', "verifier": {"model": "opus"}}',
+        encoding="utf-8")
+    assert estimate.load_config(cdir) is None
+
+
+# --- the projection's edges ----------------------------------------------
+
+def test_the_writer_output_alone_can_tip_the_verifier_into_the_long_tier(tmp_path):
+    payload = tmp_path / "payload.txt"
+    payload.write_text("x" * 360_000, encoding="utf-8")  # 90K tokens
+    units = [{"id": "u", "jd": str(payload)}]
+    spec_v = estimate._tokens(estimate.split_spec(SPEC)["verifier"])
+    at_line = 100_000 - spec_v - 90_000  # verifier prompt of exactly 100K tokens
+
+    def haiku_both(worker_out):
+        options = estimate.project(units, SPEC, worker_out=worker_out)["options"]
+        return next(o["cost_usd"] for o in options if o["key"] == "haiku-both")
+
+    # One more output token puts about 100K verifier input tokens at $0.50
+    # instead of $0.10 per million, about four cents.
+    assert haiku_both(at_line + 1) - haiku_both(at_line) >= 0.03
+
+
+def test_the_default_option_is_always_the_whole_default(tmp_path):
+    projection = estimate.project(make_units(1, tmp_path), SPEC)
+    default = next(o for o in projection["options"] if o["key"] == "haiku-write-opus-verify")
+    assert default["share_of_default"] == 1.0
+
+
+@pytest.mark.parametrize("flag, value", [
+    ("--worker-out", "-1"),
+    ("--verifier-out", "-5"),
+    ("--ask-above", "-1"),
+    ("--attempts", "0"),
+])
+def test_the_cli_rejects_negative_sizes(tmp_path, flag, value):
+    units_file = tmp_path / "units.json"
+    units_file.write_text(json.dumps(make_units(1, tmp_path)), encoding="utf-8")
+    spec_file = tmp_path / "spec.md"
+    spec_file.write_text(SPEC, encoding="utf-8")
+    with pytest.raises(SystemExit) as exc:
+        estimate._main(["project", "--units", str(units_file), "--spec", str(spec_file),
+                        flag, value])
+    assert exc.value.code == 2
 
 
 # --- the provider caveat -------------------------------------------------

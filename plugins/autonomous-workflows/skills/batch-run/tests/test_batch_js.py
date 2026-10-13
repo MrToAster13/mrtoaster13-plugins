@@ -12,9 +12,14 @@ from __future__ import annotations
 import json
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
+
+import estimate  # noqa: E402
 
 BATCH_JS = Path(__file__).resolve().parents[1] / "workflows" / "batch.js"
 NODE = shutil.which("node")
@@ -105,3 +110,67 @@ def test_missing_or_junk_models_run_the_defaults_silently(models):
     assert result["worker"] == {"model": "haiku", "effort": None}
     assert result["verifier"] == {"model": "opus", "effort": None}
     assert result["logs"] == []
+
+
+def test_a_stage_written_as_a_bare_string_is_its_model():
+    result = stage_opts({"worker": "opus", "verifier": "Haiku"})
+    assert result["worker"] == {"model": "opus", "effort": None}
+    assert result["verifier"] == {"model": "haiku", "effort": None}
+    assert result["logs"] == []
+
+
+@pytest.mark.parametrize("value, shown", [(5, "5"), (["opus"], '["opus"]'), (True, "true")])
+def test_a_junk_stage_value_is_logged_once_and_falls_back(value, shown):
+    result = stage_opts({"worker": value, "verifier": {"model": "opus"}})
+    assert result["worker"] == {"model": "haiku", "effort": None}
+    assert result["logs"] == ["worker: {} is not a model setting, running haiku".format(shown)]
+
+
+@pytest.mark.parametrize("raw", [
+    "opus", "Opus 5.5", "OPUS\n", "opus-haiku", "haiku haiku", "claude-opusx",
+    "\u043epus", "op\u200bus", "HAI\u212aU", "HA\u0130KU", "\ufeffhaiku",
+])
+def test_model_names_resolve_the_same_in_python_and_javascript(raw):
+    expected = estimate.normalize_model(raw)
+    expected = expected if expected in estimate.PRICES else "opus"
+    assert stage_opts({"verifier": {"model": raw}})["verifier"]["model"] == expected
+
+
+@pytest.mark.parametrize("raw", [
+    " high\t", "\ufeffhigh", "\x85high", "high\x1f", "\u00a0high", "HIGH",
+])
+def test_effort_levels_resolve_the_same_in_python_and_javascript(raw):
+    result = stage_opts({"verifier": {"model": "opus", "effort": raw}})
+    assert result["verifier"]["effort"] == estimate.normalize_effort(raw)
+
+
+def _call_args(source, start):
+    """Split the argument list of the call whose "(" is at start."""
+    depth, args, current = 0, [], []
+    for char in source[start + 1:]:
+        if char in "([{":
+            depth += 1
+        elif char in ")]}":
+            if depth == 0:
+                args.append("".join(current).strip())
+                return args
+            depth -= 1
+        elif char == "," and depth == 0:
+            args.append("".join(current).strip())
+            current = []
+            continue
+        current.append(char)
+    raise AssertionError("unclosed call at {}".format(start))
+
+
+def test_every_agent_call_takes_its_options_from_stage_opts():
+    """stageOpts is only safe if nothing reaches agent() around it."""
+    import re
+
+    lines = BATCH_JS.read_text(encoding="utf-8").splitlines()
+    code = "\n".join(line for line in lines if not line.lstrip().startswith("//"))
+    calls = [m.end() - 1 for m in re.finditer(r"(?<![\w.])agent\(", code)]
+    assert len(calls) == 2  # the writer and the verifier
+    for start in calls:
+        args = _call_args(code, start)
+        assert len(args) == 2 and args[1].startswith("stageOpts("), args

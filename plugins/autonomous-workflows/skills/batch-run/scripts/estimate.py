@@ -30,15 +30,17 @@ CONFIG_NAME = "batch-config.json"
 
 # USD per million tokens. Subagents run on Opus or Haiku only, so those are the
 # only two models the menu prices. Each row prices the model the alias resolves
-# to on the Claude API. Other providers serve older models under the same
-# aliases; the Scale section of batch-run/SKILL.md lists them.
+# to on the Claude API in the newest alias table of Claude Code 2.1.296. Other
+# providers, and older tables in the same binary, serve older models under the
+# same aliases; the Scale section of batch-run/SKILL.md lists them.
 PRICES = {
     "opus": {"id": "claude-opus-5-5", "in": 4.00, "out": 20.00, "effort": True},
     # Haiku 5.5 charges the higher pair when a request's prompt is over
     # long_above tokens. Off the Claude API (Bedrock, Vertex, Foundry and the
     # other providers Claude Code knows) the haiku alias resolves to Haiku 4.5
-    # instead ($1 / $5), which has no effort parameter, so haiku is never paired
-    # with an effort override.
+    # instead ($1 / $5). Haiku 5.5 takes an effort level and Haiku 4.5 does
+    # not, and nothing here can tell which one the alias will reach, so haiku
+    # is never paired with an effort override.
     "haiku": {"id": "claude-haiku-5-5", "in": 0.10, "out": 0.50,
               "long_above": 100_000, "in_long": 0.50, "out_long": 2.50,
               "effort": False},
@@ -55,6 +57,13 @@ FAMILIES = ("opus", "haiku", "sonnet", "fable", "mythos")
 
 # The effort levels Claude Code accepts. Anything else is dropped on load.
 EFFORT_LEVELS = ("low", "medium", "high", "xhigh", "max")
+
+# The keys a stage may carry. Anything else is dropped on load and reported.
+STAGE_KEYS = ("model", "effort")
+
+# Only ASCII whitespace is trimmed, so this file and batch.js, whose trim()
+# strips a different set of characters, read the same value the same way.
+ASCII_SPACE = " \t\n\r\f\v"
 
 MENU = [
     {"key": "haiku-write-opus-verify", "label": "Haiku writer, Opus verifier",
@@ -89,16 +98,17 @@ def price_for(alias, prompt_tokens=0):
 def normalize_model(value):
     """Map a saved model name to a menu alias, or return it lowercased.
 
-    The name is split into runs of letters. If exactly one run is a family
-    word and that family is one the menu prices, the name means that alias:
-    "Opus 5.5", "opus[1m]", "claude-opus-5-5" and
-    "us.anthropic.claude-opus-5-5" are all opus. "claude-opusx" has no family
-    word and "sonnet-opus" has two, so both come back as is and the caller
-    remaps them. Anything that is not a string comes back as None.
+    The name is split into runs of ASCII letters. If those runs name exactly
+    one family (a repeat counts once) and that family is one the menu prices,
+    the name means that alias: "Opus 5.5", "opus[1m]", "claude-opus-5-5" and
+    "us.anthropic.claude-opus-5-5" are all opus. "claude-opusx" names no
+    family and "sonnet-opus" names two, so both come back trimmed and
+    lowercased, and the caller remaps them. Anything that is not a string
+    comes back as None.
     """
     if not isinstance(value, str):
         return None
-    name = value.strip().lower()
+    name = value.strip(ASCII_SPACE).lower()
     families = {word for word in re.findall(r"[a-z]+", name) if word in FAMILIES}
     if len(families) == 1:
         family = families.pop()
@@ -110,13 +120,12 @@ def normalize_model(value):
 def normalize_effort(value):
     """Return a valid effort level, lowercased, or None.
 
-    Only strings count. The Agent tool also takes an integer effort, but the
-    menu never writes one, so a number in the file is a hand edit and is
-    dropped.
+    Only strings count. The menu never writes a number, so a number in the
+    file is a hand edit and is dropped.
     """
     if not isinstance(value, str):
         return None
-    level = value.strip().lower()
+    level = value.strip(ASCII_SPACE).lower()
     return level if level in EFFORT_LEVELS else None
 
 
@@ -196,9 +205,9 @@ def project(units, spec_text, attempts=2, worker_out=DEFAULT_WORKER_OUT,
     options = json.loads(json.dumps(MENU))
     baseline = cost("haiku", "opus")
     for option in options:
-        option["cost_usd"] = round(cost(option["worker"]["model"],
-                                        option["verifier"]["model"]), 2)
-        option["share_of_default"] = round(option["cost_usd"] / baseline, 2) if baseline else 1.0
+        option_cost = cost(option["worker"]["model"], option["verifier"]["model"])
+        option["cost_usd"] = round(option_cost, 2)
+        option["share_of_default"] = round(option_cost / baseline, 2) if baseline else 1.0
         # An effort override on a model that rejects the parameter is a bug, not
         # a saving. Catch it here rather than at agent-launch time.
         for stage in ("worker", "verifier"):
@@ -297,25 +306,37 @@ def load_config(checkpoint_dir):
     - "choice" is set to the menu option the stages match, or "custom".
     - Keys other than model and effort inside a stage are dropped.
 
-    Each reported change is listed under "remapped" so the caller can tell
-    the user, and the corrected record is written back, without "remapped",
-    so the next resume starts clean. If the write fails, the last entry of
-    "remapped" says so and the corrected models are still returned.
+    Each of those changes is listed under "remapped" so the caller can tell
+    the user. A stale "remapped" list in the file, an effort of null and a
+    stage written as a bare string are tidied without a note, since none of
+    them changes what the batch runs on. Whenever anything changed, the
+    corrected record is written back, without "remapped", so the next load
+    reports nothing. If that write fails, the last entry of "remapped" says
+    so and the corrected models are still returned.
     """
     path = Path(checkpoint_dir) / CONFIG_NAME
     try:
-        with open(path, "r", encoding="utf-8") as fh:
+        # utf-8-sig also reads a file an editor saved with a byte order mark.
+        with open(path, "r", encoding="utf-8-sig") as fh:
             data = json.load(fh)
-    except (OSError, ValueError):
+    except (OSError, ValueError, RecursionError):
         return None
     if not isinstance(data, dict) or "worker" not in data or "verifier" not in data:
         return None
+    tidied = "remapped" in data
     data.pop("remapped", None)
     remapped = []
     for stage, default in STAGE_DEFAULTS.items():
         cfg = data[stage]
-        raw = cfg.get("model") if isinstance(cfg, dict) else cfg
-        effort = cfg.get("effort") if isinstance(cfg, dict) else None
+        if isinstance(cfg, dict):
+            raw, effort = cfg.get("model"), cfg.get("effort")
+            for key in sorted(k for k in cfg if k not in STAGE_KEYS):
+                remapped.append("{}: key {} dropped".format(stage, key))
+            if "effort" in cfg and effort is None:
+                tidied = True
+        else:
+            raw, effort = cfg, None
+            tidied = True
         model = normalize_model(raw)
         if model in PRICES:
             new = {"model": model}
@@ -326,15 +347,18 @@ def load_config(checkpoint_dir):
             remapped.append("{}: {} -> {}".format(stage, _shown(raw), default))
         if effort is not None:
             level = normalize_effort(effort)
+            # The same reasons, in the same words, that batch.js logs.
             if model not in PRICES:
-                remapped.append("{}: effort {} dropped with the old model".format(
-                    stage, _shown(effort)))
+                reason = ("no model was named" if raw is None
+                          else "it came with a model that is not allowed")
             elif level is None:
-                remapped.append("{}: effort {} dropped, not one of {}".format(
-                    stage, _shown(effort), ", ".join(EFFORT_LEVELS)))
+                reason = "it is not one of " + ", ".join(EFFORT_LEVELS)
             elif not supports_effort(model):
-                remapped.append("{}: effort {} dropped, {} takes no effort override".format(
-                    stage, level, model))
+                reason = model + " takes no effort override"
+            else:
+                reason = None
+            if reason:
+                remapped.append("{}: effort {} dropped, {}".format(stage, _shown(effort), reason))
             else:
                 new["effort"] = level
                 if level != effort:
@@ -344,13 +368,25 @@ def load_config(checkpoint_dir):
     if data.get("choice") != choice:
         remapped.append("choice: {} -> {}".format(_shown(data.get("choice")), choice))
         data["choice"] = choice
-    if remapped:
+    if remapped or tidied:
         try:
             state._atomic_write_json(path, dict(data))
         except OSError as exc:
-            remapped.append("not written back: {}".format(exc))
+            if remapped:
+                remapped.append("not written back: {}".format(exc))
+    if remapped:
         data["remapped"] = remapped
     return data
+
+
+def _at_least(minimum):
+    """An argparse type: an integer no smaller than minimum."""
+    def parse(text):
+        value = int(text)
+        if value < minimum:
+            raise argparse.ArgumentTypeError("must be {} or more, got {}".format(minimum, value))
+        return value
+    return parse
 
 
 def _main(argv=None):
@@ -361,10 +397,10 @@ def _main(argv=None):
     p_proj = sub.add_parser("project", help="project cost and print the menu")
     p_proj.add_argument("--units", required=True)
     p_proj.add_argument("--spec", required=True)
-    p_proj.add_argument("--attempts", type=int, default=2)
-    p_proj.add_argument("--worker-out", type=int, default=DEFAULT_WORKER_OUT)
-    p_proj.add_argument("--verifier-out", type=int, default=DEFAULT_VERIFIER_OUT)
-    p_proj.add_argument("--ask-above", type=int, default=DEFAULT_ASK_ABOVE)
+    p_proj.add_argument("--attempts", type=_at_least(1), default=2)
+    p_proj.add_argument("--worker-out", type=_at_least(0), default=DEFAULT_WORKER_OUT)
+    p_proj.add_argument("--verifier-out", type=_at_least(0), default=DEFAULT_VERIFIER_OUT)
+    p_proj.add_argument("--ask-above", type=_at_least(0), default=DEFAULT_ASK_ABOVE)
     p_proj.add_argument("--text", action="store_true", help="human-readable instead of JSON")
 
     p_save = sub.add_parser("save-config", help="record the chosen models for resume")

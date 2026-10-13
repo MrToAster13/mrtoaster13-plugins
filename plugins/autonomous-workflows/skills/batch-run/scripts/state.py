@@ -30,6 +30,7 @@ import json
 import os
 import re
 import sys
+import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -72,12 +73,21 @@ def lock_path(checkpoint_dir, unit_id):
 
 def _atomic_write_json(path, payload):
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.parent / "{}.{}.tmp".format(path.name, os.getpid())
-    with open(tmp, "w", encoding="utf-8") as fh:
-        json.dump(payload, fh, indent=2, sort_keys=True)
-        fh.flush()
-        os.fsync(fh.fileno())
-    os.replace(tmp, path)
+    # The process and thread ids keep two writers of one file off the same
+    # temp path. A failed write removes its temp file before re-raising.
+    tmp = path.parent / "{}.{}.{}.tmp".format(path.name, os.getpid(), threading.get_ident())
+    try:
+        with open(tmp, "w", encoding="utf-8") as fh:
+            json.dump(payload, fh, indent=2, sort_keys=True)
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+        raise
 
 
 def read_record(checkpoint_dir, unit_id):
