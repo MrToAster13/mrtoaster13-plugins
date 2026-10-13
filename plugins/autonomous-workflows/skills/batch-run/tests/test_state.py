@@ -258,7 +258,8 @@ def test_a_zero_lease_is_stealable_even_with_a_file_time_ahead_of_the_clock(batc
     assert state.claim(cdir, "unit-08", lease_seconds=0) is True
 
 
-def test_a_lock_whose_time_cannot_be_read_is_left_alone(batch, monkeypatch):
+@pytest.mark.parametrize("lease", [60, 0], ids=["lease-60", "lease-0"])
+def test_a_lock_whose_time_cannot_be_read_is_left_alone(batch, monkeypatch, lease):
     _, _, cdir = batch
     assert state.claim(cdir, "unit-09") is True
     path = state.lock_path(cdir, "unit-09")
@@ -270,7 +271,8 @@ def test_a_lock_whose_time_cannot_be_read_is_left_alone(batch, monkeypatch):
 
     monkeypatch.setattr(state.os.path, "getmtime", vanished)
     # Stale on disk, but the caller cannot see that, so it must not unlink.
-    assert state.claim(cdir, "unit-09", lease_seconds=60) is False
+    # A zero lease steals any lock it can age, but not one it cannot.
+    assert state.claim(cdir, "unit-09", lease_seconds=lease) is False
     assert path.exists()
 
 
@@ -308,6 +310,23 @@ def test_a_lock_windows_reports_in_use_for_a_moment_is_retried(batch, monkeypatc
     assert len(calls) == 3
 
 
+def test_a_stale_lock_the_caller_cannot_delete_reads_as_held(batch, monkeypatch):
+    _, _, cdir = batch
+    assert state.claim(cdir, "unit-13") is True
+    path = state.lock_path(cdir, "unit-13")
+    old = time.time() - 3600
+    os.utime(str(path), (old, old))
+
+    def denied(target):
+        raise PermissionError(13, "Permission denied", target)
+
+    monkeypatch.setattr(state.os, "unlink", denied)
+    # The documented exception: no raise, just a loss, on every call.
+    assert state.claim(cdir, "unit-13", lease_seconds=60) is False
+    assert state.claim(cdir, "unit-13", lease_seconds=60) is False
+    assert path.exists()
+
+
 def _always_denied(target, flags, *rest):
     raise PermissionError(13, "Permission denied", target)
 
@@ -320,11 +339,11 @@ def test_a_lock_that_stays_denied_raises_instead_of_reading_as_held(batch, monke
         state.claim(cdir, "unit-12")
 
 
-def test_the_claim_cli_exits_2_when_the_lock_cannot_be_created(batch, monkeypatch, capsys):
+def test_the_claim_cli_exits_3_when_the_lock_cannot_be_created(batch, monkeypatch, capsys):
     _, _, cdir = batch
     monkeypatch.setattr(state, "SHARING_RETRY_DELAYS", (0,))
     monkeypatch.setattr(state.os, "open", _always_denied)
-    assert state._main(["claim", "--dir", str(cdir), "--id", "unit-12"]) == 2
+    assert state._main(["claim", "--dir", str(cdir), "--id", "unit-12"]) == 3
     out = capsys.readouterr()
     assert "held-by-another" not in out.out
     assert "cannot create the lock" in out.err

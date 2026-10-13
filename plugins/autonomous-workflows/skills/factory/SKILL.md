@@ -100,20 +100,20 @@ body loses the file's frontmatter, so pass `model: "opus"` on that call
 yourself. Both work. Say which one you are using, once.
 
 **Models are fixed.** The orchestrator, meaning you, should run on Opus, because
-judgement about what to park and what to dispatch is the one thing that cannot be
-delegated. This skill cannot switch the session's model, so if the session is
-not on Opus, tell the user before dispatching anything. Every agent below you runs `model: opus` too: builders, adversaries,
-the integrator, and polish. The one exception is a one off subagent a builder
-spawns, which runs on `model: haiku` for lookups and mechanical generation and
-`model: opus` for anything else. Pin no effort setting on a Haiku agent.
-Depending on the provider (Bedrock, Vertex, Foundry and others) and on which
-alias table the Claude Code session uses, the `haiku` alias can resolve to
-Haiku 4.5, which has no effort parameter. Never run an agent on Sonnet. The
-model you pass can still be overridden by settings such as
-`CLAUDE_CODE_SUBAGENT_MODEL_FORCE`; batch-run's Scale section lists them, and
-`CLAUDE_CODE_WORKFLOW_SUBAGENT_MODEL` in that list applies only to workflow
-agents. A shallow
-review is a briefing problem, not a model problem. Fix the brief.
+judgement about what to park and what to dispatch is the one thing that cannot
+be delegated. This skill cannot switch the session's model, so if the session is
+not on Opus, tell the user before dispatching anything. Every agent below you
+runs `model: opus` too: builders, adversaries, the integrator, and polish. The
+one exception is a one off subagent a builder spawns, which runs on
+`model: haiku` for lookups and mechanical generation and `model: opus` for
+anything else. Pin no effort setting on a Haiku agent. Depending on the provider
+(Bedrock, Vertex, Foundry and others) and on which alias table the Claude Code
+session uses, the `haiku` alias can resolve to Haiku 4.5, which has no effort
+parameter. Never run an agent on Sonnet. The model you pass can still be
+overridden by settings such as `CLAUDE_CODE_SUBAGENT_MODEL_FORCE`; batch-run's
+Scale section lists them, and `CLAUDE_CODE_WORKFLOW_SUBAGENT_MODEL` in that list
+applies only to workflow agents. A shallow review is a briefing problem, not a
+model problem. Fix the brief.
 
 ## Phase 3: The loop
 

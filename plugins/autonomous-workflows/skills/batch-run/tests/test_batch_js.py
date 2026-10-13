@@ -53,16 +53,17 @@ def stage_opts(models, timeout=60):
     return json.loads(out.stdout.decode())
 
 
-# Runs the whole of batch.js, as the workflow runtime would, with stub agent,
-# pipeline and log. Each unit's first verdict rejects, so both agent() calls
-# run twice.
+# Runs the whole of batch.js in strict mode, as the workflow runtime would,
+# with stub agent, pipeline and log. Every verdict but the last attempt's
+# rejects, so both agent() calls run once per attempt up to maxAttempts.
 WHOLE_RUNNER = r"""
 const fs = require('fs')
-const src = fs.readFileSync(process.argv[1], 'utf8').replace('export const meta', 'const meta')
+const src = '"use strict";\n' +
+  fs.readFileSync(process.argv[1], 'utf8').replace('export const meta', 'const meta')
 const input = JSON.parse(fs.readFileSync(0, 'utf8'))
 const AsyncFunction = (async () => {}).constructor
 const calls = []
-const seen = new Set()
+const seen = new Map()
 const agent = async (...callArgs) => {
   const opts = callArgs[1]
   calls.push({ count: callArgs.length, opts: opts && typeof opts === 'object'
@@ -72,9 +73,10 @@ const agent = async (...callArgs) => {
     : null })
   const phase = opts && opts.phase
   if (phase === 'Verify') {
-    const first = !seen.has(opts.label)
-    seen.add(opts.label)
-    return { ok: !first, reason: first ? 'first look' : 'holds up' }
+    const looks = (seen.get(opts.label) || 0) + 1
+    seen.set(opts.label, looks)
+    const ok = looks >= input.maxAttempts
+    return { ok, reason: ok ? 'holds up' : 'look ' + looks }
   }
   return { artifact: 'out.txt', summary: 'done' }
 }
@@ -87,9 +89,9 @@ run(input, agent, pipeline, (m) => logs.push(m)).then(
 """
 
 
-def run_whole_workflow(models):
+def run_whole_workflow(models, max_attempts):
     payload = {"units": [{"id": "a"}, {"id": "b"}], "worker": "w {id}", "verifier": "v {id}",
-               "models": models}
+               "models": models, "maxAttempts": max_attempts}
     out = subprocess.run([NODE, "-e", WHOLE_RUNNER, str(BATCH_JS)],
                          input=json.dumps(payload).encode(), timeout=60,
                          stdout=subprocess.PIPE, stderr=subprocess.PIPE)
@@ -374,16 +376,22 @@ def test_the_blanker_names_an_unclosed_string_instead_of_crashing():
      "haiku", "opus"),
     ({"worker": "opus", "verifier": {"model": "Haiku", "effort": "low"}}, "opus", "haiku"),
 ], ids=["defaults", "sonnet-everywhere", "swapped"])
-def test_every_agent_call_in_a_whole_run_names_an_allowed_model(models, worker, verifier):
+@pytest.mark.parametrize("max_attempts", [2, estimate.MAX_ATTEMPTS],
+                         ids=["default-attempts", "max-attempts"])
+def test_every_agent_call_in_a_whole_run_names_an_allowed_model(
+        models, worker, verifier, max_attempts):
     """The static test reads the source; this one runs it.
 
     A call the static test cannot see, such as an escaped identifier or a
-    shadowed stageOpts, still has to pass an allowed model here.
+    shadowed stageOpts, still has to pass an allowed model here. The run goes
+    to the highest attempt count estimate.py accepts, so a stageOpts swapped
+    out only on a late retry is caught too.
     """
-    result = run_whole_workflow(models)
+    result = run_whole_workflow(models, max_attempts)
     calls = result["calls"]
-    # Two units, each rejected once: two writes and two verifies per unit.
-    assert len(calls) == 8, calls
+    # Two units, each rejected until its last attempt: one write and one
+    # verify per unit per attempt.
+    assert len(calls) == 2 * 2 * max_attempts, calls
     for call in calls:
         assert call["count"] == 2 and call["opts"] is not None, call
         assert call["opts"]["model"] in ("opus", "haiku"), call

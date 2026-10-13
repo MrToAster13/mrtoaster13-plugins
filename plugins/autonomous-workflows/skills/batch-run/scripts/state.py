@@ -232,8 +232,9 @@ def claim(checkpoint_dir, unit_id, lease_seconds=DEFAULT_LEASE_SECONDS, owner=No
     to belong to a process that died and gets stolen. The age comes from the
     lock file's modified time, not its contents, so a lock a winner has created
     but not yet written still counts as held, and a hand-edited `at` cannot
-    hold a unit forever. A file time more than a lease ahead of the clock is
-    bogus and counts as stale. A lock whose time cannot be read is left
+    hold a unit forever. A file time a full lease or more ahead of the
+    clock is bogus and counts as stale, so a shorter lease gives up such a
+    lock sooner. A lock whose time cannot be read is left
     alone, so the caller loses unless the lock is already gone. Two callers
     that judge the same lock stale at the same moment can both win; the
     lease length does not prevent that. Keep the lease above a unit's run
@@ -241,7 +242,9 @@ def claim(checkpoint_dir, unit_id, lease_seconds=DEFAULT_LEASE_SECONDS, owner=No
 
     Creating the lock retries a few times while Windows reports it in use,
     then raises PermissionError. A directory the caller cannot write to
-    raises too, rather than passing for a lock someone else holds.
+    raises too, rather than passing for a lock someone else holds. One
+    exception: if a stale lock is already there and the caller cannot delete
+    it, the claim returns False as if the lock were held, on every call.
     """
     path = lock_path(checkpoint_dir, unit_id)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -340,9 +343,9 @@ def _main(argv=None):
         try:
             won = claim(args.dir, args.id, args.lease_seconds, args.owner)
         except PermissionError as exc:
-            # Exit 2, so a denied directory is not read as a held unit (exit 1).
+            # Exit 3: not 1 (held) and not 2 (argparse's usage error).
             print("cannot create the lock: {}".format(exc), file=sys.stderr)
-            return 2
+            return 3
         print("claimed" if won else "held-by-another")
         return 0 if won else 1
     if args.command == "release":

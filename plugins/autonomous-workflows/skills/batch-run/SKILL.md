@@ -157,15 +157,18 @@ looks good returns yes every time.
 Concurrency is capped at `min(16, cores - 2)` per run, so a batch of 200 units
 is fine to submit whole. The default is a Haiku writer and an Opus verifier.
 The workflow sets `opts.model` on every agent rather than inheriting the session
-model, so an Opus session runs 30 Haiku writers and 30 Opus verifiers for 30
-units, not 60 Opus agents.
+model. For 30 units, an Opus session runs 30 Haiku writers and 30 Opus
+verifiers on the first attempt, plus one more of each for every unit that is
+rejected and retried, rather than 60 or more Opus agents.
 
 Claude Code can override that model, and the script cannot see it happen. In
 Claude Code 2.1.296:
 
 - If `CLAUDE_CODE_WORKFLOW_SUBAGENT_MODEL` holds anything other than an empty
-  string or `inherit`, or `CLAUDE_CODE_SUBAGENT_MODEL_FORCE` is on, the workflow runtime ignores the
-  model `agent()` passes and logs `Workflow agent model "..." ignored`.
+  string or `inherit`, or `CLAUDE_CODE_SUBAGENT_MODEL_FORCE` is on, the
+  workflow runtime ignores the model `agent()` passes and logs
+  `Workflow agent model "..." ignored`. The runtime does not trim the value,
+  so one made only of spaces counts as set.
 - `ANTHROPIC_DEFAULT_OPUS_MODEL` and `ANTHROPIC_DEFAULT_HAIKU_MODEL` point the
   aliases at whatever model they name.
 - An `availableModels` allowlist that leaves out the model swaps in the newest
@@ -222,7 +225,13 @@ it through.
   source material cannot support.
 - **Concurrent runs of the same batch** are not prevented by default. If you
   genuinely need that, wrap each unit in `state.py claim` / `release`. A single
-  workflow run dispatches each unit once and does not need it.
+  workflow run dispatches each unit once and does not need it. `claim` exits 0
+  and prints `claimed` when the caller wins, exits 1 and prints
+  `held-by-another` when it loses, exits 2 on a usage error such as a negative
+  `--lease-seconds`, and exits 3 when it cannot create the lock file. Any other
+  error prints a Python traceback and also exits 1, so check for
+  `held-by-another` on stdout rather than the exit code alone. A stale lock
+  the caller cannot delete reads as held on every call.
 - **Deleting a record file is the supported way to force a redo** of one unit.
 
 ## Layout
