@@ -158,8 +158,9 @@ Concurrency is capped at `min(16, cores - 2)` per run, so a batch of 200 units
 is fine to submit whole. The default is a Haiku writer and an Opus verifier.
 The workflow sets `opts.model` on every agent rather than inheriting the session
 model. For 30 units, an Opus session runs 30 Haiku writers and 30 Opus
-verifiers on the first attempt, plus one more of each for every unit that is
-rejected and retried, rather than 60 or more Opus agents.
+verifiers on the first attempt, plus one writer and one verifier for every
+retry, rather than 60 or more Opus agents. A writer that dies gets no
+verifier, so its attempt adds a writer only.
 
 Claude Code can override that model, and the script cannot see it happen. In
 Claude Code 2.1.296:
@@ -167,8 +168,8 @@ Claude Code 2.1.296:
 - If `CLAUDE_CODE_WORKFLOW_SUBAGENT_MODEL` holds anything other than an empty
   string or `inherit`, or `CLAUDE_CODE_SUBAGENT_MODEL_FORCE` is on, the
   workflow runtime ignores the model `agent()` passes and logs
-  `Workflow agent model "..." ignored`. The runtime does not trim the value,
-  so one made only of spaces counts as set.
+  `Workflow agent model "..." ignored`. The runtime reads the variable with
+  `D.str`, which trims it, so a value made only of spaces counts as unset.
 - `ANTHROPIC_DEFAULT_OPUS_MODEL` and `ANTHROPIC_DEFAULT_HAIKU_MODEL` point the
   aliases at whatever model they name.
 - An `availableModels` allowlist that leaves out the model swaps in the newest

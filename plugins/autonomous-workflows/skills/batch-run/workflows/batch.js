@@ -12,9 +12,9 @@ export const meta = {
 // and spec.md on the outside and passes them in, because workflow scripts have
 // no filesystem access of their own.
 // With no models, stageOpts runs a Haiku writer and an Opus verifier rather
-// than inheriting the session model. Inheriting would silently run a 30-unit
-// batch at 60 Opus agents, and the session model may be one subagents must not
-// run on. stageOpts holds the only copy of those defaults.
+// than inheriting the session model. Inheriting would run 30 units in an Opus
+// session as 60 or more Opus agents, and the session model may be one
+// subagents must not run on. stageOpts holds the only copy of those defaults.
 const {
   units = [],
   worker = '',
