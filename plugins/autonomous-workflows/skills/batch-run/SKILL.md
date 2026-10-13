@@ -163,8 +163,8 @@ units, not 60 Opus agents.
 Claude Code can override that model, and the script cannot see it happen. In
 Claude Code 2.1.296:
 
-- If `CLAUDE_CODE_WORKFLOW_SUBAGENT_MODEL` is set to a model name or
-  `CLAUDE_CODE_SUBAGENT_MODEL_FORCE` is on, the workflow runtime ignores the
+- If `CLAUDE_CODE_WORKFLOW_SUBAGENT_MODEL` holds anything other than an empty
+  string or `inherit`, or `CLAUDE_CODE_SUBAGENT_MODEL_FORCE` is on, the workflow runtime ignores the
   model `agent()` passes and logs `Workflow agent model "..." ignored`.
 - `ANTHROPIC_DEFAULT_OPUS_MODEL` and `ANTHROPIC_DEFAULT_HAIKU_MODEL` point the
   aliases at whatever model they name.
@@ -203,7 +203,7 @@ and `gateway` (Opus 4.7). Its price table lists Opus 5 at $5 / $25. Under that
 table the Haiku share is low on every provider and the Opus share is 80% of the
 real price. Which table a given session uses is unverified.
 
-In fast mode the binary's price table lists Opus 5.5 at $8 / $40, twice the
+The binary's fast-mode price lookup returns $8 / $40 for Opus 5.5, twice the
 menu's figure. Whether workflow agents run in fast mode is unverified.
 
 Haiku 5.5 takes an `effort` level and Haiku 4.5 does not. Nothing in this skill

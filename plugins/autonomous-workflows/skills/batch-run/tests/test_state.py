@@ -274,8 +274,22 @@ def test_a_lock_whose_time_cannot_be_read_is_left_alone(batch, monkeypatch):
     assert path.exists()
 
 
+@pytest.mark.parametrize("seconds_ahead, won", [
+    (30, False),        # clock skew within the lease: still held
+    (10 ** 9, True),    # decades ahead: a bogus time, so stale
+], ids=["skew", "far-future"])
+def test_a_lock_dated_ahead_of_the_clock_is_held_only_within_a_lease(
+        batch, seconds_ahead, won):
+    _, _, cdir = batch
+    assert state.claim(cdir, "unit-11") is True
+    path = state.lock_path(cdir, "unit-11")
+    ahead = time.time() + seconds_ahead
+    os.utime(str(path), (ahead, ahead))
+    assert state.claim(cdir, "unit-11", lease_seconds=60) is won
+
+
 @pytest.mark.parametrize("busy_on", [1, 2], ids=["first-open", "retry-open"])
-def test_a_lock_windows_reports_in_use_is_a_lost_claim(batch, monkeypatch, busy_on):
+def test_a_lock_windows_reports_in_use_for_a_moment_is_retried(batch, monkeypatch, busy_on):
     _, _, cdir = batch
     assert state.claim(cdir, "unit-10") is True
     path = state.lock_path(cdir, "unit-10")
@@ -290,7 +304,30 @@ def test_a_lock_windows_reports_in_use_is_a_lost_claim(batch, monkeypatch, busy_
         return real_open(target, flags, *rest)
 
     monkeypatch.setattr(state.os, "open", busy)
-    assert state.claim(cdir, "unit-10", lease_seconds=60) is False
+    assert state.claim(cdir, "unit-10", lease_seconds=60) is True
+    assert len(calls) == 3
+
+
+def _always_denied(target, flags, *rest):
+    raise PermissionError(13, "Permission denied", target)
+
+
+def test_a_lock_that_stays_denied_raises_instead_of_reading_as_held(batch, monkeypatch):
+    _, _, cdir = batch
+    monkeypatch.setattr(state, "SHARING_RETRY_DELAYS", (0,))
+    monkeypatch.setattr(state.os, "open", _always_denied)
+    with pytest.raises(PermissionError):
+        state.claim(cdir, "unit-12")
+
+
+def test_the_claim_cli_exits_2_when_the_lock_cannot_be_created(batch, monkeypatch, capsys):
+    _, _, cdir = batch
+    monkeypatch.setattr(state, "SHARING_RETRY_DELAYS", (0,))
+    monkeypatch.setattr(state.os, "open", _always_denied)
+    assert state._main(["claim", "--dir", str(cdir), "--id", "unit-12"]) == 2
+    out = capsys.readouterr()
+    assert "held-by-another" not in out.out
+    assert "cannot create the lock" in out.err
 
 
 def test_a_write_retries_while_windows_reports_the_file_in_use(batch, monkeypatch):

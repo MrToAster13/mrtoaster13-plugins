@@ -646,8 +646,10 @@ def test_the_default_option_is_always_the_whole_default(tmp_path):
     ("--attempts", "0"),
     ("--worker-out", "1" + "0" * 400),
     ("--verifier-out", str(10 ** 9 + 1)),
+    ("--attempts", "101"),
+    ("--ask-above", str(10 ** 15 + 1)),
 ], ids=["worker-negative", "verifier-negative", "ask-below-zero", "attempts-zero",
-        "worker-huge", "verifier-over-cap"])
+        "worker-huge", "verifier-over-cap", "attempts-over-cap", "ask-over-cap"])
 def test_the_cli_rejects_negative_or_huge_sizes(tmp_path, flag, value):
     units_file = tmp_path / "units.json"
     units_file.write_text(json.dumps(make_units(1, tmp_path)), encoding="utf-8")
@@ -683,6 +685,48 @@ def test_a_spec_saved_with_a_byte_order_mark_still_splits(tmp_path, capsys):
     assert estimate._main(["project", "--units", str(units_file),
                            "--spec", str(spec_file)]) == 0
     assert json.loads(capsys.readouterr().out)["units"] == 1
+
+
+def test_a_spec_read_retries_while_windows_reports_the_file_in_use(
+        tmp_path, monkeypatch, capsys):
+    units_file = tmp_path / "units.json"
+    units_file.write_text(json.dumps(make_units(1, tmp_path)), encoding="utf-8")
+    spec_file = tmp_path / "spec.md"
+    spec_file.write_text(SPEC, encoding="utf-8")
+    real_open, calls = open, []
+
+    def busy_once(path, *args, **kwargs):
+        calls.append(path)
+        if len(calls) == 1:
+            raise PermissionError("in use")
+        return real_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(estimate, "open", busy_once, raising=False)
+    assert estimate._main(["project", "--units", str(units_file),
+                           "--spec", str(spec_file)]) == 0
+    assert json.loads(capsys.readouterr().out)["units"] == 1
+    assert len(calls) == 2
+
+
+def test_attempts_and_ask_above_accept_their_ceilings(tmp_path, capsys):
+    units_file = tmp_path / "units.json"
+    units_file.write_text(json.dumps(make_units(1, tmp_path)), encoding="utf-8")
+    spec_file = tmp_path / "spec.md"
+    spec_file.write_text(SPEC, encoding="utf-8")
+    assert estimate._main(["project", "--units", str(units_file), "--spec", str(spec_file),
+                           "--attempts", str(estimate.MAX_ATTEMPTS),
+                           "--ask-above", str(estimate.MAX_ASK_ABOVE)]) == 0
+    projection = json.loads(capsys.readouterr().out)
+    assert projection["attempts"] == estimate.MAX_ATTEMPTS
+    assert projection["ask"] is False
+
+
+@pytest.mark.parametrize("raw", [" 2", "2　"], ids=["nbsp", "ideographic-space"])
+def test_a_choice_padded_with_non_ascii_space_is_unknown(tmp_path, raw):
+    projection = estimate.project(make_units(1, tmp_path), SPEC)
+    with pytest.raises(ValueError, match="unknown choice"):
+        estimate.resolve_choice(raw, projection["options"])
+    assert estimate.resolve_choice(" 2\t", projection["options"]) == projection["options"][1]
 
 
 # --- the provider caveat -------------------------------------------------

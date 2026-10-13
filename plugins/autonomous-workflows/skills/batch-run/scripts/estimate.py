@@ -260,7 +260,7 @@ def resolve_choice(choice, projection_options):
     to be a valid answer. Slugs still win, and an out-of-range number reports the
     slugs rather than the numbers, since those are what the file records.
     """
-    choice = str(choice).strip()
+    choice = str(choice).strip(ASCII_SPACE)
     for option in projection_options:
         if option["key"] == choice:
             return option
@@ -384,6 +384,17 @@ def load_config(checkpoint_dir):
 
 _at_least = state._at_least
 MAX_OUT_TOKENS = 10 ** 9
+MAX_ATTEMPTS = 100
+MAX_ASK_ABOVE = 10 ** 15
+
+
+def _read_text(path):
+    """Read a text file. utf-8-sig drops a byte order mark that would hide the
+    first heading, and a read Windows reports as in use is retried."""
+    def read():
+        with open(path, "r", encoding="utf-8-sig") as fh:
+            return fh.read()
+    return state._retry_while_in_use(read)
 
 
 def _main(argv=None):
@@ -394,13 +405,13 @@ def _main(argv=None):
     p_proj = sub.add_parser("project", help="project cost and print the menu")
     p_proj.add_argument("--units", required=True)
     p_proj.add_argument("--spec", required=True)
-    p_proj.add_argument("--attempts", type=_at_least(1), default=2)
-    # The ceiling keeps the cost arithmetic finite.
+    # The ceilings keep the cost arithmetic finite and the numbers printable.
+    p_proj.add_argument("--attempts", type=_at_least(1, MAX_ATTEMPTS), default=2)
     p_proj.add_argument("--worker-out", type=_at_least(0, MAX_OUT_TOKENS),
                         default=DEFAULT_WORKER_OUT)
     p_proj.add_argument("--verifier-out", type=_at_least(0, MAX_OUT_TOKENS),
                         default=DEFAULT_VERIFIER_OUT)
-    p_proj.add_argument("--ask-above", type=_at_least(0), default=DEFAULT_ASK_ABOVE)
+    p_proj.add_argument("--ask-above", type=_at_least(0, MAX_ASK_ABOVE), default=DEFAULT_ASK_ABOVE)
     p_proj.add_argument("--text", action="store_true", help="human-readable instead of JSON")
 
     p_save = sub.add_parser("save-config", help="record the chosen models for resume")
@@ -416,8 +427,7 @@ def _main(argv=None):
 
     if args.command in ("project", "save-config"):
         units = state.load_units(args.units)
-        # utf-8-sig drops a byte order mark that would hide the first heading.
-        spec_text = Path(args.spec).read_text(encoding="utf-8-sig")
+        spec_text = _read_text(args.spec)
 
     if args.command == "project":
         projection = project(units, spec_text, args.attempts, args.worker_out,

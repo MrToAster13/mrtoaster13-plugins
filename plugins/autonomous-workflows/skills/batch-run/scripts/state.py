@@ -232,20 +232,27 @@ def claim(checkpoint_dir, unit_id, lease_seconds=DEFAULT_LEASE_SECONDS, owner=No
     to belong to a process that died and gets stolen. The age comes from the
     lock file's modified time, not its contents, so a lock a winner has created
     but not yet written still counts as held, and a hand-edited `at` cannot
-    hold a unit forever. A lock whose time cannot be read is left alone and
-    the caller loses. Two callers that judge the same lock stale at the same
-    moment can both win; the lease length does not prevent that. Keep the
-    lease above a unit's run time so a live holder is not judged stale.
+    hold a unit forever. A file time more than a lease ahead of the clock is
+    bogus and counts as stale. A lock whose time cannot be read is left
+    alone, so the caller loses unless the lock is already gone. Two callers
+    that judge the same lock stale at the same moment can both win; the
+    lease length does not prevent that. Keep the lease above a unit's run
+    time so a live holder is not judged stale.
+
+    Creating the lock retries a few times while Windows reports it in use,
+    then raises PermissionError. A directory the caller cannot write to
+    raises too, rather than passing for a lock someone else holds.
     """
     path = lock_path(checkpoint_dir, unit_id)
     path.parent.mkdir(parents=True, exist_ok=True)
     body = json.dumps({"owner": owner or str(os.getpid()), "at": time.time()})
     flags = os.O_CREAT | os.O_EXCL | os.O_WRONLY
+
+    def create():
+        return _retry_while_in_use(lambda: os.open(str(path), flags))
+
     try:
-        fd = os.open(str(path), flags)
-    except PermissionError:
-        # Windows reports a lock that its holder is deleting as in use.
-        return False
+        fd = create()
     except FileExistsError:
         try:
             age = time.time() - os.path.getmtime(str(path))
@@ -256,15 +263,15 @@ def claim(checkpoint_dir, unit_id, lease_seconds=DEFAULT_LEASE_SECONDS, owner=No
         if age is not None:
             # A zero-second lease is always stealable, even when the file time
             # reads a little ahead of the clock.
-            if lease_seconds > 0 and age < lease_seconds:
+            if lease_seconds > 0 and -lease_seconds < age < lease_seconds:
                 return False
             try:
                 os.unlink(str(path))
             except OSError:
                 pass
         try:
-            fd = os.open(str(path), flags)
-        except (FileExistsError, PermissionError):
+            fd = create()
+        except FileExistsError:
             return False
     with os.fdopen(fd, "w") as fh:
         fh.write(body)
@@ -330,7 +337,12 @@ def _main(argv=None):
         print(json.dumps(summary, indent=2))
         return 0 if (summary["complete"] or not args.strict) else 1
     if args.command == "claim":
-        won = claim(args.dir, args.id, args.lease_seconds, args.owner)
+        try:
+            won = claim(args.dir, args.id, args.lease_seconds, args.owner)
+        except PermissionError as exc:
+            # Exit 2, so a denied directory is not read as a held unit (exit 1).
+            print("cannot create the lock: {}".format(exc), file=sys.stderr)
+            return 2
         print("claimed" if won else "held-by-another")
         return 0 if won else 1
     if args.command == "release":

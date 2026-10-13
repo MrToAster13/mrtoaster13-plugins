@@ -75,8 +75,9 @@ The report gives one copy-pasteable block per repo. Rules:
 
 **Match the user's shell.** The discovery commands in stages 0 to 3 are
 PowerShell. The ship commands go in the shell the user will paste them into,
-so ask or check rather than assume. `$PSVersionTable` exists in PowerShell and
-does not in bash.
+so ask the user which shell that is rather than assume. Checking
+`$PSVersionTable` from your own tool only tells you which shell the tool runs,
+not the one the user pastes into.
 
 **Never mix shells.** A `\` line continuation is a bash-ism; in PowerShell it
 becomes a literal backslash inside the argument. PowerShell's continuation is a
@@ -89,8 +90,9 @@ backtick, but the fix is to not continue lines at all.
 git -C <repo> commit -m 'add valuation and fee tests'
 ```
 
-If a multi-line body is genuinely needed, use a single-quoted here-string with
-the closing `'@` at column 0. Never a bash heredoc.
+If a multi-line body is genuinely needed in PowerShell, use a single-quoted
+here-string with the closing `'@` at column 0. A bash heredoc does not work
+there.
 
 **Bake the absolute path into every command.** `git -C <abs-path>` and nothing
 that depends on cwd.

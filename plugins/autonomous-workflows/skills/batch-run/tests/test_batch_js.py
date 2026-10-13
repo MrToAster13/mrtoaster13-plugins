@@ -3,8 +3,9 @@
 batch.js is a workflow script with a top-level return, so it cannot be
 imported. These tests cut the block from `const ALLOWED_MODELS` to
 `if (!units.length)` out of the file, run it under node with stub `models`
-and `log`, and read back what stageOpts would pass to agent(). They skip
-when node is not on PATH.
+and `log`, and read back what stageOpts would pass to agent(). One test runs
+the whole script with stub `agent`, `pipeline` and `log` and checks every
+call. They skip when node is not on PATH.
 """
 
 from __future__ import annotations
@@ -33,7 +34,7 @@ const start = src.indexOf('const ALLOWED_MODELS')
 const end = src.indexOf('if (!units.length)')
 if (start < 0 || end < start) throw new Error('stageOpts block not found')
 const chunk = src.slice(start, end)
-const models = JSON.parse(process.argv[2])
+const models = JSON.parse(fs.readFileSync(0, 'utf8'))
 const logs = []
 const run = new Function('models', 'log', chunk +
   '\nreturn [stageOpts("worker", "w", "p", {}), stageOpts("worker", "w", "p", {}),' +
@@ -44,9 +45,55 @@ console.log(JSON.stringify({ worker: pick(worker), again: pick(again), verifier:
 """
 
 
-def stage_opts(models):
-    out = subprocess.run([NODE, "-e", RUNNER, str(BATCH_JS), json.dumps(models)],
+def stage_opts(models, timeout=60):
+    # models goes in on stdin, so its size is not capped by the command line.
+    out = subprocess.run([NODE, "-e", RUNNER, str(BATCH_JS)],
+                         input=json.dumps(models).encode(), timeout=timeout,
                          stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True)
+    return json.loads(out.stdout.decode())
+
+
+# Runs the whole of batch.js, as the workflow runtime would, with stub agent,
+# pipeline and log. Each unit's first verdict rejects, so both agent() calls
+# run twice.
+WHOLE_RUNNER = r"""
+const fs = require('fs')
+const src = fs.readFileSync(process.argv[1], 'utf8').replace('export const meta', 'const meta')
+const input = JSON.parse(fs.readFileSync(0, 'utf8'))
+const AsyncFunction = (async () => {}).constructor
+const calls = []
+const seen = new Set()
+const agent = async (...callArgs) => {
+  const opts = callArgs[1]
+  calls.push({ count: callArgs.length, opts: opts && typeof opts === 'object'
+    ? { model: opts.model === undefined ? null : opts.model,
+        effort: opts.effort === undefined ? null : opts.effort,
+        phase: opts.phase === undefined ? null : opts.phase }
+    : null })
+  const phase = opts && opts.phase
+  if (phase === 'Verify') {
+    const first = !seen.has(opts.label)
+    seen.add(opts.label)
+    return { ok: !first, reason: first ? 'first look' : 'holds up' }
+  }
+  return { artifact: 'out.txt', summary: 'done' }
+}
+const pipeline = async (items, fn) => Promise.all(items.map(fn))
+const logs = []
+const run = new AsyncFunction('args', 'agent', 'pipeline', 'log', src)
+run(input, agent, pipeline, (m) => logs.push(m)).then(
+  (result) => console.log(JSON.stringify({ calls, logs, result })),
+  (error) => { console.error(String(error && error.stack || error)); process.exit(1) })
+"""
+
+
+def run_whole_workflow(models):
+    payload = {"units": [{"id": "a"}, {"id": "b"}], "worker": "w {id}", "verifier": "v {id}",
+               "models": models}
+    out = subprocess.run([NODE, "-e", WHOLE_RUNNER, str(BATCH_JS)],
+                         input=json.dumps(payload).encode(), timeout=60,
+                         stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    assert out.returncode == 0, out.stderr.decode()
     return json.loads(out.stdout.decode())
 
 
@@ -129,6 +176,7 @@ def test_a_junk_stage_value_is_logged_once_and_falls_back(value, shown):
 @pytest.mark.parametrize("raw", [
     "opus", "Opus 5.5", "OPUS\n", "opus-haiku", "haiku haiku", "claude-opusx",
     "\u043epus", "op\u200bus", "HAI\u212aU", "HA\u0130KU", "\ufeffhaiku",
+    "\rhaiku\r", "\x0bhaiku\x0c",
 ])
 def test_model_names_resolve_the_same_in_python_and_javascript(raw):
     expected = estimate.normalize_model(raw)
@@ -166,17 +214,19 @@ def test_a_null_model_with_no_effort_runs_the_default_silently():
 
 
 @pytest.mark.parametrize("raw", [
-    # Small enough for a Windows command line, which caps near 32K characters.
-    "opus" + " " * 10_000 + "x", " " * 10_000 + "haiku" + "\t" * 10_000,
+    "opus" + " " * 1_000_000 + "x", " " * 1_000_000 + "haiku" + "\t" * 1_000_000,
 ], ids=["inner-run", "outer-runs"])
-def test_a_long_run_of_spaces_trims_the_same_in_both_languages(raw):
+def test_a_long_run_of_spaces_trims_the_same_in_both_languages_and_fast(raw):
     expected = estimate.normalize_model(raw)
     expected = expected if expected in estimate.PRICES else "opus"
-    assert stage_opts({"verifier": {"model": raw}})["verifier"]["model"] == expected
+    # A regex trim takes minutes on a million inner spaces; the loop takes
+    # milliseconds. The timeout fails the slow one.
+    assert stage_opts({"verifier": {"model": raw}}, timeout=20)["verifier"]["model"] == expected
 
 
 @pytest.mark.parametrize("raw", [
     " high\t", "\ufeffhigh", "\x85high", "high\x1f", "\u00a0high", "HIGH",
+    "\rhigh", "high\r", "\x0bhigh\x0c",
 ])
 def test_effort_levels_resolve_the_same_in_python_and_javascript(raw):
     result = stage_opts({"verifier": {"model": "opus", "effort": raw}})
@@ -262,8 +312,9 @@ def _blank_comments_and_strings(source):
             i = end + 2
         elif c in "'\"":
             j = i + 1
-            while source[j] != c:
+            while j < n and source[j] != c:
                 j += 2 if source[j] == "\\" else 1
+            assert j < n, "unclosed string at {} (a regex literal holding a quote?)".format(i)
             blank(i, j + 1)
             i = j + 1
         elif c == "`":
@@ -310,3 +361,36 @@ def test_every_agent_call_takes_its_options_from_stage_opts():
         opts = re.match(r"stageOpts\s*\(", args[1])
         assert opts, args
         assert _close_of(args[1], opts.end() - 1) == len(args[1]) - 1, args[1]
+
+
+def test_the_blanker_names_an_unclosed_string_instead_of_crashing():
+    with pytest.raises(AssertionError, match="unclosed string"):
+        _blank_comments_and_strings("const quoteRe = /'/g")
+
+
+@pytest.mark.parametrize("models, worker, verifier", [
+    (None, "haiku", "opus"),
+    ({"worker": {"model": "sonnet", "effort": "high"}, "verifier": "claude-sonnet-5-5"},
+     "haiku", "opus"),
+    ({"worker": "opus", "verifier": {"model": "Haiku", "effort": "low"}}, "opus", "haiku"),
+], ids=["defaults", "sonnet-everywhere", "swapped"])
+def test_every_agent_call_in_a_whole_run_names_an_allowed_model(models, worker, verifier):
+    """The static test reads the source; this one runs it.
+
+    A call the static test cannot see, such as an escaped identifier or a
+    shadowed stageOpts, still has to pass an allowed model here.
+    """
+    result = run_whole_workflow(models)
+    calls = result["calls"]
+    # Two units, each rejected once: two writes and two verifies per unit.
+    assert len(calls) == 8, calls
+    for call in calls:
+        assert call["count"] == 2 and call["opts"] is not None, call
+        assert call["opts"]["model"] in ("opus", "haiku"), call
+        if call["opts"]["model"] == "haiku":
+            assert call["opts"]["effort"] is None, call
+    by_phase = {}
+    for call in calls:
+        by_phase.setdefault(call["opts"]["phase"], set()).add(call["opts"]["model"])
+    assert by_phase == {"Write": {worker}, "Verify": {verifier}}
+    assert result["result"]["verified"] == 2
