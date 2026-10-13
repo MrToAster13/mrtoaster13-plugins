@@ -40,7 +40,15 @@ const {
 const ALLOWED_MODELS = ['opus', 'haiku']
 const FAMILIES = ['opus', 'haiku', 'sonnet', 'fable', 'mythos']
 const EFFORT_LEVELS = ['low', 'medium', 'high', 'xhigh', 'max']
-const asciiTrim = (text) => text.replace(/^[ \t\n\r\f\v]+|[ \t\n\r\f\v]+$/g, '')
+// A loop rather than a regex, so a long run of inner spaces stays linear.
+const isAsciiSpace = (code) => code === 32 || (code >= 9 && code <= 13)
+const asciiTrim = (text) => {
+  let start = 0
+  let end = text.length
+  while (start < end && isAsciiSpace(text.charCodeAt(start))) start++
+  while (end > start && isAsciiSpace(text.charCodeAt(end - 1))) end--
+  return text.slice(start, end)
+}
 const normalizeModel = (value) => {
   if (typeof value !== 'string') return null
   const name = asciiTrim(value).toLowerCase()
@@ -60,7 +68,8 @@ const warnOnce = (key, message) => {
 }
 const stageOpts = (stage, label, phase, schema) => {
   const fallback = stage === 'worker' ? 'haiku' : 'opus'
-  const raw = models && models[stage]
+  // A models value that is not an object (0, false, '', a list) names nothing.
+  const raw = models && typeof models === 'object' && !Array.isArray(models) ? models[stage] : undefined
   const isSetting = raw && typeof raw === 'object' && !Array.isArray(raw)
   if (raw !== undefined && raw !== null && typeof raw !== 'string' && !isSetting) {
     warnOnce(`${stage}:model`, `${stage}: ${JSON.stringify(raw)} is not a model setting, running ${fallback}`)

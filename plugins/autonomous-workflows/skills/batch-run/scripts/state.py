@@ -92,12 +92,15 @@ def _read_json(path):
     return _retry_while_in_use(read)
 
 
-def _at_least(minimum):
-    """An argparse type: an integer no smaller than minimum."""
+def _at_least(minimum, maximum=None):
+    """An argparse type: an integer no smaller than minimum and, when a
+    maximum is given, no larger than it."""
     def integer(text):
         value = int(text)
         if value < minimum:
             raise argparse.ArgumentTypeError("must be {} or more, got {}".format(minimum, value))
+        if maximum is not None and value > maximum:
+            raise argparse.ArgumentTypeError("must be {} or less, got {}".format(maximum, value))
         return value
     return integer
 
@@ -172,7 +175,7 @@ def load_units(units_path):
     try:
         units = _read_json(units_path)
     except RecursionError:
-        raise ValueError("units file is nested too deeply to read")
+        raise ValueError("units file is nested too deeply to read") from None
     if not isinstance(units, list):
         raise ValueError("units file must contain a JSON list")
     seen = set()
@@ -229,9 +232,10 @@ def claim(checkpoint_dir, unit_id, lease_seconds=DEFAULT_LEASE_SECONDS, owner=No
     to belong to a process that died and gets stolen. The age comes from the
     lock file's modified time, not its contents, so a lock a winner has created
     but not yet written still counts as held, and a hand-edited `at` cannot
-    hold a unit forever. Two callers that find the same stale lock at the
-    same moment can both steal it, so keep the lease well above a unit's run
-    time.
+    hold a unit forever. A lock whose time cannot be read is left alone and
+    the caller loses. Two callers that judge the same lock stale at the same
+    moment can both win; the lease length does not prevent that. Keep the
+    lease above a unit's run time so a live holder is not judged stale.
     """
     path = lock_path(checkpoint_dir, unit_id)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -239,22 +243,28 @@ def claim(checkpoint_dir, unit_id, lease_seconds=DEFAULT_LEASE_SECONDS, owner=No
     flags = os.O_CREAT | os.O_EXCL | os.O_WRONLY
     try:
         fd = os.open(str(path), flags)
+    except PermissionError:
+        # Windows reports a lock that its holder is deleting as in use.
+        return False
     except FileExistsError:
         try:
             age = time.time() - os.path.getmtime(str(path))
         except OSError:
-            age = lease_seconds + 1
-        # A zero-second lease is always stealable, even when the file time
-        # reads a little ahead of the clock.
-        if lease_seconds > 0 and age < lease_seconds:
-            return False
-        try:
-            os.unlink(str(path))
-        except OSError:
-            pass
+            # The lock vanished or is being deleted. Its age is unknown, so
+            # do not unlink it: that could remove a lock a winner just made.
+            age = None
+        if age is not None:
+            # A zero-second lease is always stealable, even when the file time
+            # reads a little ahead of the clock.
+            if lease_seconds > 0 and age < lease_seconds:
+                return False
+            try:
+                os.unlink(str(path))
+            except OSError:
+                pass
         try:
             fd = os.open(str(path), flags)
-        except FileExistsError:
+        except (FileExistsError, PermissionError):
             return False
     with os.fdopen(fd, "w") as fh:
         fh.write(body)

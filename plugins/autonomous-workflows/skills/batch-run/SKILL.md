@@ -163,7 +163,7 @@ units, not 60 Opus agents.
 Claude Code can override that model, and the script cannot see it happen. In
 Claude Code 2.1.296:
 
-- If `CLAUDE_CODE_WORKFLOW_SUBAGENT_MODEL` is set or
+- If `CLAUDE_CODE_WORKFLOW_SUBAGENT_MODEL` is set to a model name or
   `CLAUDE_CODE_SUBAGENT_MODEL_FORCE` is on, the workflow runtime ignores the
   model `agent()` passes and logs `Workflow agent model "..." ignored`.
 - `ANTHROPIC_DEFAULT_OPUS_MODEL` and `ANTHROPIC_DEFAULT_HAIKU_MODEL` point the
@@ -192,9 +192,10 @@ table of Claude Code 2.1.296:
 - `opus` is Opus 4.6 on Foundry and Opus 4.7 on `gateway`. The binary's own
   price table lists both at $5 / $25, so on those two the Opus share of each
   figure is 80% of the real price. That table was not checked against
-  Anthropic's price page. It also lists no `xhigh` effort for Opus 4.6. The
-  menu only ever sets `low`, but `load-config` and `batch.js` keep a hand-set
-  `xhigh` or `max` on Opus and pass it through as written.
+  Anthropic's price page. The binary's model catalog lists no `xhigh` effort
+  for Opus 4.6. The menu only ever sets `low`, but `load-config` and
+  `batch.js` keep a hand-set `xhigh` or `max` on Opus and pass it through
+  after trimming and lowercasing.
 
 The same binary also carries a second alias table. It maps `haiku` to Haiku 4.5
 on every provider, and `opus` to Opus 5 everywhere except Foundry (Opus 4.6)
@@ -229,6 +230,10 @@ it through.
 - `scripts/state.py` - the checkpoint store and its CLI. The whole invariant lives here.
 - `scripts/handoff.py` - renders a handoff doc from the checkpoint dir, on the way back up.
 - `workflows/batch.js` - the fan-out: write, then refute, with one retry.
-- `tests/test_state.py` - 27 tests, mostly simulated interruptions. Run with
-  `python -m pytest tests/ -q` from the skill dir.
+- `scripts/estimate.py` - the cost projection, the model menu and the saved choice.
+- `tests/test_state.py` - the checkpoint store, mostly simulated interruptions.
+- `tests/test_estimate.py` - the projection, the menu and the saved choice.
+- `tests/test_batch_js.py` - the model and effort rules in `batch.js`, run under
+  node; skipped when node is not on PATH.
+- Run the tests with `python -m pytest tests/ -q` from the skill dir.
 - `examples/` - a runnable units and spec pair.

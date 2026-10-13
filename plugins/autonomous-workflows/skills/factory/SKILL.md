@@ -104,10 +104,12 @@ judgement about what to park and what to dispatch is the one thing that cannot b
 delegated. Every agent below you runs `model: opus` too: builders, adversaries,
 the integrator, and polish. The one exception is a one off subagent a builder
 spawns, which runs on `model: haiku` for lookups and mechanical generation and
-`model: opus` for anything else. Pin no effort setting on a Haiku agent. Off
-the Claude API (Bedrock, Vertex, Foundry and the other providers Claude Code
-knows) the `haiku` alias still resolves to Haiku 4.5, which has no effort
-parameter. Never run an agent on Sonnet. A shallow
+`model: opus` for anything else. Pin no effort setting on a Haiku agent.
+Depending on the provider (Bedrock, Vertex, Foundry and others) and on which
+alias table the Claude Code build uses, the `haiku` alias can resolve to
+Haiku 4.5, which has no effort parameter. Never run an agent on Sonnet. The
+model you pass can still be overridden by settings such as
+`CLAUDE_CODE_SUBAGENT_MODEL_FORCE`; batch-run's Scale section lists them. A shallow
 review is a briefing problem, not a model problem. Fix the brief.
 
 ## Phase 3: The loop
@@ -190,7 +192,8 @@ flat number would halt a twenty ticket build partway through for no reason.
 2. Build through `/tdd` at the seams the PRD names. One red green slice at a time.
 3. Spawn one off subagents for self contained work, up to the allowance its brief
    states, never more: reading an unfamiliar library, generating fixtures,
-   scaffolding components.
+   scaffolding components. Name the model on each spawn: `model: "haiku"` for
+   lookups and mechanical generation, `model: "opus"` for anything else.
 4. Typecheck and run affected tests as it goes, the full suite once at the end.
 5. Run the secret scan in [team.md](./team.md), then push and open a draft PR
    against the integration branch using the body template in

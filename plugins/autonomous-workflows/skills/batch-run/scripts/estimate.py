@@ -62,8 +62,8 @@ EFFORT_LEVELS = ("low", "medium", "high", "xhigh", "max")
 # The keys a stage may carry. Anything else is dropped on load and reported.
 STAGE_KEYS = ("model", "effort")
 
-# Only ASCII whitespace is trimmed, so this file and batch.js, whose trim()
-# strips a different set of characters, read the same value the same way.
+# Only ASCII whitespace is trimmed. batch.js trims the same set with its own
+# asciiTrim, so both read the same value the same way.
 ASCII_SPACE = " \t\n\r\f\v"
 
 MENU = [
@@ -319,9 +319,9 @@ def load_config(checkpoint_dir):
     """
     path = Path(checkpoint_dir) / CONFIG_NAME
     try:
-        # utf-8-sig also reads a file an editor saved with a byte order mark.
-        with open(path, "r", encoding="utf-8-sig") as fh:
-            data = json.load(fh)
+        # Reads a file saved with a byte order mark, and retries while Windows
+        # reports the file in use.
+        data = state._read_json(path)
     except (OSError, ValueError, RecursionError):
         return None
     if not isinstance(data, dict) or "worker" not in data or "verifier" not in data:
@@ -383,6 +383,7 @@ def load_config(checkpoint_dir):
 
 
 _at_least = state._at_least
+MAX_OUT_TOKENS = 10 ** 9
 
 
 def _main(argv=None):
@@ -394,8 +395,11 @@ def _main(argv=None):
     p_proj.add_argument("--units", required=True)
     p_proj.add_argument("--spec", required=True)
     p_proj.add_argument("--attempts", type=_at_least(1), default=2)
-    p_proj.add_argument("--worker-out", type=_at_least(0), default=DEFAULT_WORKER_OUT)
-    p_proj.add_argument("--verifier-out", type=_at_least(0), default=DEFAULT_VERIFIER_OUT)
+    # The ceiling keeps the cost arithmetic finite.
+    p_proj.add_argument("--worker-out", type=_at_least(0, MAX_OUT_TOKENS),
+                        default=DEFAULT_WORKER_OUT)
+    p_proj.add_argument("--verifier-out", type=_at_least(0, MAX_OUT_TOKENS),
+                        default=DEFAULT_VERIFIER_OUT)
     p_proj.add_argument("--ask-above", type=_at_least(0), default=DEFAULT_ASK_ABOVE)
     p_proj.add_argument("--text", action="store_true", help="human-readable instead of JSON")
 
@@ -412,7 +416,8 @@ def _main(argv=None):
 
     if args.command in ("project", "save-config"):
         units = state.load_units(args.units)
-        spec_text = Path(args.spec).read_text(encoding="utf-8")
+        # utf-8-sig drops a byte order mark that would hide the first heading.
+        spec_text = Path(args.spec).read_text(encoding="utf-8-sig")
 
     if args.command == "project":
         projection = project(units, spec_text, args.attempts, args.worker_out,

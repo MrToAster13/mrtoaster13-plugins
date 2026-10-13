@@ -104,7 +104,7 @@ def test_an_effort_on_a_rejected_model_goes_with_it():
     ]
 
 
-@pytest.mark.parametrize("models", [None, {}, {"worker": None}, "x", []])
+@pytest.mark.parametrize("models", [None, {}, {"worker": None}, "x", [], 0, False, "", 5])
 def test_missing_or_junk_models_run_the_defaults_silently(models):
     result = stage_opts(models)
     assert result["worker"] == {"model": "haiku", "effort": None}
@@ -159,6 +159,22 @@ def test_a_null_model_with_an_effort_gives_the_reason_python_gives():
     assert result["logs"] == ['verifier: effort "low" dropped, no model was named']
 
 
+def test_a_null_model_with_no_effort_runs_the_default_silently():
+    result = stage_opts({"worker": {"model": None}, "verifier": {"model": "opus"}})
+    assert result["worker"] == {"model": "haiku", "effort": None}
+    assert result["logs"] == []
+
+
+@pytest.mark.parametrize("raw", [
+    # Small enough for a Windows command line, which caps near 32K characters.
+    "opus" + " " * 10_000 + "x", " " * 10_000 + "haiku" + "\t" * 10_000,
+], ids=["inner-run", "outer-runs"])
+def test_a_long_run_of_spaces_trims_the_same_in_both_languages(raw):
+    expected = estimate.normalize_model(raw)
+    expected = expected if expected in estimate.PRICES else "opus"
+    assert stage_opts({"verifier": {"model": raw}})["verifier"]["model"] == expected
+
+
 @pytest.mark.parametrize("raw", [
     " high\t", "\ufeffhigh", "\x85high", "high\x1f", "\u00a0high", "HIGH",
 ])
@@ -186,14 +202,111 @@ def _call_args(source, start):
     raise AssertionError("unclosed call at {}".format(start))
 
 
+def _close_of(source, start):
+    """The index of the bracket that closes the one at start."""
+    depth = 0
+    for index in range(start, len(source)):
+        if source[index] in "([{":
+            depth += 1
+        elif source[index] in ")]}":
+            depth -= 1
+            if depth == 0:
+                return index
+    raise AssertionError("unclosed bracket at {}".format(start))
+
+
+def _blank_comments_and_strings(source):
+    """Replace comments and string text with spaces, keeping offsets.
+
+    Code inside a template literal's ${...} is kept, since a call there runs.
+    Regex literals are not recognised; batch.js has none holding a quote,
+    a slash pair or a backtick.
+    """
+    out = list(source)
+    i, n = 0, len(source)
+    braces = []  # one entry per open "{": True when it opened a ${...}
+
+    def blank(a, b):
+        for k in range(a, b):
+            if out[k] != "\n":
+                out[k] = " "
+
+    def template_from(i):
+        # i is just past a backtick or a closing "}" of ${...}.
+        start = i
+        while i < n:
+            if source[i] == "\\":
+                i += 2
+            elif source[i] == "`":
+                blank(start, i + 1)
+                return i + 1
+            elif source.startswith("${", i):
+                blank(start, i + 2)
+                braces.append(True)
+                return i + 2
+            else:
+                i += 1
+        raise AssertionError("unclosed template literal")
+
+    while i < n:
+        c = source[i]
+        if source.startswith("//", i):
+            end = source.find("\n", i)
+            end = n if end < 0 else end
+            blank(i, end)
+            i = end
+        elif source.startswith("/*", i):
+            end = source.find("*/", i + 2)
+            assert end >= 0, "unclosed block comment"
+            blank(i, end + 2)
+            i = end + 2
+        elif c in "'\"":
+            j = i + 1
+            while source[j] != c:
+                j += 2 if source[j] == "\\" else 1
+            blank(i, j + 1)
+            i = j + 1
+        elif c == "`":
+            out[i] = " "
+            i = template_from(i + 1)
+        elif c == "{":
+            braces.append(False)
+            i += 1
+        elif c == "}":
+            if braces and braces.pop():
+                out[i] = " "
+                i = template_from(i + 1)
+            else:
+                i += 1
+        else:
+            i += 1
+    return "".join(out)
+
+
+def test_the_comment_and_string_blanker_keeps_template_code():
+    code = _blank_comments_and_strings(
+        "a('agent(') // agent(x)\n/* agent( */ `t ${agent(1, {k: `${b}`})} u` + \"agent(\"")
+    assert code.count("agent") == 1 and "agent(1, {k:" in code
+
+
 def test_every_agent_call_takes_its_options_from_stage_opts():
-    """stageOpts is only safe if nothing reaches agent() around it."""
+    """stageOpts is only safe if nothing reaches agent() around it.
+
+    Every use of the name `agent` in code must be one of the two calls, so an
+    alias (`const a = agent`), a method call (`this.agent(`) or a call hidden
+    in a template literal fails the test. The second argument must be a single
+    stageOpts(...) call with nothing after it.
+    """
     import re
 
-    lines = BATCH_JS.read_text(encoding="utf-8").splitlines()
-    code = "\n".join(line for line in lines if not line.lstrip().startswith("//"))
-    calls = [m.end() - 1 for m in re.finditer(r"(?<![\w.$])agent\s*\(", code)]
-    assert len(calls) == 2  # the writer and the verifier
-    for start in calls:
-        args = _call_args(code, start)
-        assert len(args) == 2 and args[1].startswith("stageOpts("), args
+    code = _blank_comments_and_strings(BATCH_JS.read_text(encoding="utf-8"))
+    uses = list(re.finditer(r"(?<![\w$])agent(?![\w$])", code))
+    assert len(uses) == 2, [code[m.start():m.start() + 40] for m in uses]
+    for use in uses:
+        call = re.compile(r"\s*\(").match(code, use.end())
+        assert call, code[use.start():use.start() + 40]
+        args = _call_args(code, call.end() - 1)
+        assert len(args) == 2, args
+        opts = re.match(r"stageOpts\s*\(", args[1])
+        assert opts, args
+        assert _close_of(args[1], opts.end() - 1) == len(args[1]) - 1, args[1]

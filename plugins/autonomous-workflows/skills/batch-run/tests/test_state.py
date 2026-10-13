@@ -210,8 +210,10 @@ def test_a_units_file_with_a_byte_order_mark_loads(tmp_path):
 def test_a_units_file_nested_too_deep_is_a_clean_error(tmp_path):
     path = tmp_path / "units.json"
     path.write_text("[" * 100_000 + "]" * 100_000, encoding="utf-8")
-    with pytest.raises(ValueError, match="nested too deeply"):
+    with pytest.raises(ValueError, match="nested too deeply") as caught:
         state.load_units(str(path))
+    # One error, not a RecursionError traceback chained in front of it.
+    assert caught.value.__suppress_context__
 
 
 def test_a_record_with_a_byte_order_mark_still_counts_as_verified(batch):
@@ -234,7 +236,7 @@ def test_a_record_nested_too_deep_reads_as_pending(batch):
 @pytest.mark.parametrize("body", [
     "", "{", "[" * 100_000 + "]" * 100_000, '{"at": "x"}', '{"at": 1e999}',
     '{"at": 99999999999}',
-], ids=["empty", "truncated", "deep", "text-at", "infinite-at", "future-at"])
+], ids=["empty", "truncated", "deep", "text-at", "infinite-at", "future-at-field"])
 def test_a_lock_is_aged_by_its_file_time_not_its_contents(batch, body):
     _, _, cdir = batch
     path = state.lock_path(cdir, "unit-07")
@@ -245,6 +247,50 @@ def test_a_lock_is_aged_by_its_file_time_not_its_contents(batch, body):
     old = time.time() - 120
     os.utime(str(path), (old, old))
     assert state.claim(cdir, "unit-07", lease_seconds=60) is True
+
+
+def test_a_zero_lease_is_stealable_even_with_a_file_time_ahead_of_the_clock(batch):
+    _, _, cdir = batch
+    assert state.claim(cdir, "unit-08") is True
+    path = state.lock_path(cdir, "unit-08")
+    ahead = time.time() + 30
+    os.utime(str(path), (ahead, ahead))
+    assert state.claim(cdir, "unit-08", lease_seconds=0) is True
+
+
+def test_a_lock_whose_time_cannot_be_read_is_left_alone(batch, monkeypatch):
+    _, _, cdir = batch
+    assert state.claim(cdir, "unit-09") is True
+    path = state.lock_path(cdir, "unit-09")
+    old = time.time() - 3600
+    os.utime(str(path), (old, old))
+
+    def vanished(_path):
+        raise FileNotFoundError(_path)
+
+    monkeypatch.setattr(state.os.path, "getmtime", vanished)
+    # Stale on disk, but the caller cannot see that, so it must not unlink.
+    assert state.claim(cdir, "unit-09", lease_seconds=60) is False
+    assert path.exists()
+
+
+@pytest.mark.parametrize("busy_on", [1, 2], ids=["first-open", "retry-open"])
+def test_a_lock_windows_reports_in_use_is_a_lost_claim(batch, monkeypatch, busy_on):
+    _, _, cdir = batch
+    assert state.claim(cdir, "unit-10") is True
+    path = state.lock_path(cdir, "unit-10")
+    old = time.time() - 3600
+    os.utime(str(path), (old, old))
+    real_open, calls = os.open, []
+
+    def busy(target, flags, *rest):
+        calls.append(target)
+        if len(calls) == busy_on:
+            raise PermissionError(13, "in use", target)
+        return real_open(target, flags, *rest)
+
+    monkeypatch.setattr(state.os, "open", busy)
+    assert state.claim(cdir, "unit-10", lease_seconds=60) is False
 
 
 def test_a_write_retries_while_windows_reports_the_file_in_use(batch, monkeypatch):

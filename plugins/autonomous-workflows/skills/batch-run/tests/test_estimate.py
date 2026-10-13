@@ -586,6 +586,25 @@ def test_a_config_saved_with_a_byte_order_mark_still_loads(tmp_path):
     assert "remapped" not in config
 
 
+def test_a_config_read_retries_while_windows_reports_the_file_in_use(tmp_path, monkeypatch):
+    cdir = tmp_path / "checkpoint"
+    cdir.mkdir()
+    (cdir / estimate.CONFIG_NAME).write_text(json.dumps(
+        {"choice": "opus-both", "worker": {"model": "opus"}, "verifier": {"model": "opus"}}),
+        encoding="utf-8")
+    real_open, calls = open, []
+
+    def busy_once(path, *args, **kwargs):
+        calls.append(path)
+        if len(calls) == 1:
+            raise PermissionError("in use")
+        return real_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(state, "open", busy_once, raising=False)
+    assert estimate.load_config(cdir)["choice"] == "opus-both"
+    assert len(calls) == 2
+
+
 def test_a_config_nested_too_deep_reads_as_no_choice(tmp_path):
     cdir = tmp_path / "checkpoint"
     cdir.mkdir()
@@ -625,8 +644,11 @@ def test_the_default_option_is_always_the_whole_default(tmp_path):
     ("--verifier-out", "-5"),
     ("--ask-above", "-1"),
     ("--attempts", "0"),
-])
-def test_the_cli_rejects_negative_sizes(tmp_path, flag, value):
+    ("--worker-out", "1" + "0" * 400),
+    ("--verifier-out", str(10 ** 9 + 1)),
+], ids=["worker-negative", "verifier-negative", "ask-below-zero", "attempts-zero",
+        "worker-huge", "verifier-over-cap"])
+def test_the_cli_rejects_negative_or_huge_sizes(tmp_path, flag, value):
     units_file = tmp_path / "units.json"
     units_file.write_text(json.dumps(make_units(1, tmp_path)), encoding="utf-8")
     spec_file = tmp_path / "spec.md"
@@ -635,6 +657,32 @@ def test_the_cli_rejects_negative_sizes(tmp_path, flag, value):
         estimate._main(["project", "--units", str(units_file), "--spec", str(spec_file),
                         flag, value])
     assert exc.value.code == 2
+
+
+def test_the_largest_allowed_output_still_prices_to_a_finite_cost(tmp_path, capsys):
+    units_file = tmp_path / "units.json"
+    units_file.write_text(json.dumps(make_units(3, tmp_path)), encoding="utf-8")
+    spec_file = tmp_path / "spec.md"
+    spec_file.write_text(SPEC, encoding="utf-8")
+    cap = str(estimate.MAX_OUT_TOKENS)
+    assert estimate._main(["project", "--units", str(units_file), "--spec", str(spec_file),
+                           "--worker-out", cap, "--verifier-out", cap]) == 0
+    # json.loads accepts Infinity, so check the text, not just that it parses.
+    out = capsys.readouterr().out
+    assert "Infinity" not in out and "NaN" not in out
+    assert all(o["cost_usd"] > 0 for o in json.loads(out)["options"])
+
+
+def test_a_spec_saved_with_a_byte_order_mark_still_splits(tmp_path, capsys):
+    units_file = tmp_path / "units.json"
+    units_file.write_text(json.dumps(make_units(1, tmp_path)), encoding="utf-8")
+    spec_file = tmp_path / "spec.md"
+    # Starting at "## Worker", so a kept mark would hide that heading.
+    body = SPEC[SPEC.index("## Worker"):]
+    spec_file.write_bytes(b"\xef\xbb\xbf" + body.encode("utf-8"))
+    assert estimate._main(["project", "--units", str(units_file),
+                           "--spec", str(spec_file)]) == 0
+    assert json.loads(capsys.readouterr().out)["units"] == 1
 
 
 # --- the provider caveat -------------------------------------------------

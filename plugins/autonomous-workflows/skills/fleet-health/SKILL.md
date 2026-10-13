@@ -73,8 +73,10 @@ repo until the user resolves it.
 
 The report gives one copy-pasteable block per repo. Rules:
 
-**Detect the shell first.** `$PSVersionTable` exists in PowerShell and does not
-in bash. Do not assume which one you have.
+**Match the user's shell.** The discovery commands in stages 0 to 3 are
+PowerShell. The ship commands go in the shell the user will paste them into,
+so ask or check rather than assume. `$PSVersionTable` exists in PowerShell and
+does not in bash.
 
 **Never mix shells.** A `\` line continuation is a bash-ism; in PowerShell it
 becomes a literal backslash inside the argument. PowerShell's continuation is a
