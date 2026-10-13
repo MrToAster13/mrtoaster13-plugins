@@ -28,16 +28,38 @@ import state
 CONFIG_NAME = "batch-config.json"
 
 # USD per million tokens. Subagents run on Opus or Haiku only, so those are the
-# only two models the menu prices.
+# only two models the menu prices. Each row prices the model the alias resolves
+# to on the Claude API.
 PRICES = {
     "opus": {"id": "claude-opus-5-5", "in": 4.00, "out": 20.00, "effort": True},
-    # Haiku 4.5 rejects the effort parameter. Never pair it with an effort override.
-    "haiku": {"id": "claude-haiku-4-5", "in": 1.00, "out": 5.00, "effort": False},
+    # Haiku 5.5 charges the higher pair when a request's prompt is over
+    # long_above tokens. On Bedrock, Vertex and Foundry the haiku alias resolves
+    # to Haiku 4.5 instead ($1 / $5), which has no effort parameter, so haiku is
+    # never paired with an effort override.
+    "haiku": {"id": "claude-haiku-5-5", "in": 0.10, "out": 0.50,
+              "long_above": 100_000, "in_long": 0.50, "out_long": 2.50,
+              "effort": False},
 }
 
 # What a stage falls back to when a saved config names a model that is no
 # longer allowed, such as a checkpoint written before Sonnet was dropped.
 STAGE_DEFAULTS = {"worker": "haiku", "verifier": "opus"}
+
+MENU = [
+    {"key": "haiku-write-opus-verify", "label": "Haiku writer, Opus verifier",
+     "worker": {"model": "haiku"}, "verifier": {"model": "opus"},
+     "note": "the default: verification keeps its judgment; a weak writer gets caught"},
+    {"key": "opus-both", "label": "Opus writer, Opus verifier",
+     "worker": {"model": "opus"}, "verifier": {"model": "opus"},
+     "note": "strongest writer too, at the highest price"},
+    {"key": "haiku-both", "label": "Haiku writer, Haiku verifier",
+     "worker": {"model": "haiku"}, "verifier": {"model": "haiku"},
+     "note": "cheapest, and the weakest catch on invented facts"},
+    {"key": "opus-low-effort", "label": "Opus both, low reasoning effort",
+     "worker": {"model": "opus", "effort": "low"},
+     "verifier": {"model": "opus", "effort": "low"},
+     "note": "same price per token, fewer tokens by an amount this has not measured"},
+]
 
 DEFAULT_WORKER_OUT = 1500
 DEFAULT_VERIFIER_OUT = 400
@@ -45,9 +67,27 @@ DEFAULT_ASK_ABOVE = 100_000
 CHARS_PER_TOKEN = 4
 
 
-def price_for(alias):
+def price_for(alias, prompt_tokens=0):
+    """Input and output price for one request with a prompt of this size."""
     row = PRICES[alias]
+    if "long_above" in row and prompt_tokens > row["long_above"]:
+        return row["in_long"], row["out_long"]
     return row["in"], row["out"]
+
+
+def normalize_model(value):
+    """Map a saved model name to a menu alias, or return it unchanged.
+
+    "Opus" and "claude-opus-5-5" both mean opus. Anything that is not a string
+    comes back as None, so the caller remaps it instead of crashing on it.
+    """
+    if not isinstance(value, str):
+        return None
+    name = value.strip().lower()
+    for alias in PRICES:
+        if name == alias or name.startswith("claude-" + alias):
+            return alias
+    return name
 
 
 def supports_effort(alias):
@@ -108,29 +148,19 @@ def project(units, spec_text, attempts=2, worker_out=DEFAULT_WORKER_OUT,
     typical_out = n * per_unit_out
     worst_out = typical_out * attempts
 
+    # Pick each stage's price tier from its average prompt per agent.
+    worker_prompt = worker_in / n if n else 0
+    verifier_prompt = verifier_in / n if n else 0
+
     def cost(worker_model, verifier_model):
-        w_in, w_out = price_for(worker_model)
-        v_in, v_out = price_for(verifier_model)
+        w_in, w_out = price_for(worker_model, worker_prompt)
+        v_in, v_out = price_for(verifier_model, verifier_prompt)
         return (
             worker_in / 1e6 * w_in + (n * worker_out) / 1e6 * w_out
             + verifier_in / 1e6 * v_in + (n * verifier_out) / 1e6 * v_out
         )
 
-    options = [
-        {"key": "haiku-write-opus-verify", "label": "Haiku writer, Opus verifier",
-         "worker": {"model": "haiku"}, "verifier": {"model": "opus"},
-         "note": "the default: verification keeps its judgment; a weak writer gets caught"},
-        {"key": "opus-both", "label": "Opus writer, Opus verifier",
-         "worker": {"model": "opus"}, "verifier": {"model": "opus"},
-         "note": "strongest writer too, at the highest price"},
-        {"key": "haiku-both", "label": "Haiku writer, Haiku verifier",
-         "worker": {"model": "haiku"}, "verifier": {"model": "haiku"},
-         "note": "cheapest, and the weakest catch on invented facts"},
-        {"key": "opus-low-effort", "label": "Opus both, low reasoning effort",
-         "worker": {"model": "opus", "effort": "low"},
-         "verifier": {"model": "opus", "effort": "low"},
-         "note": "same price per token, fewer tokens by an amount this has not measured"},
-    ]
+    options = json.loads(json.dumps(MENU))
     baseline = cost("haiku", "opus")
     for option in options:
         option["cost_usd"] = round(cost(option["worker"]["model"],
@@ -214,7 +244,10 @@ def load_config(checkpoint_dir):
     A stage whose model is not one the menu prices (an old Sonnet checkpoint,
     a hand edit) is remapped to that stage's default, and each remap is listed
     under "remapped" so the caller can tell the user instead of resuming on a
-    model subagents must not run on.
+    model subagents must not run on. A spelling such as "Opus" or
+    "claude-opus-5-5" is normalised to its alias and listed the same way, and
+    an effort override on a model without one is dropped. After a remap,
+    "choice" names the menu option the stages now match, or "custom".
     """
     path = Path(checkpoint_dir) / CONFIG_NAME
     try:
@@ -224,15 +257,32 @@ def load_config(checkpoint_dir):
         return None
     if not isinstance(data, dict) or "worker" not in data or "verifier" not in data:
         return None
+    data.pop("remapped", None)
     remapped = []
     for stage, default in STAGE_DEFAULTS.items():
         cfg = data[stage]
-        model = cfg.get("model") if isinstance(cfg, dict) else None
+        raw = cfg.get("model") if isinstance(cfg, dict) else cfg
+        shown = raw if isinstance(raw, str) else json.dumps(raw)
+        model = normalize_model(raw)
         if model not in PRICES:
             data[stage] = {"model": default}
-            remapped.append("{}: {} -> {}".format(stage, model, default))
+            remapped.append("{}: {} -> {}".format(stage, shown, default))
+            continue
+        new = dict(cfg) if isinstance(cfg, dict) else {}
+        new["model"] = model
+        if model != raw:
+            remapped.append("{}: {} -> {}".format(stage, shown, model))
+        if new.get("effort") and not supports_effort(model):
+            remapped.append("{}: effort {} dropped, {} takes no effort override".format(
+                stage, new.pop("effort"), model))
+        data[stage] = new
     if remapped:
         data["remapped"] = remapped
+        stages = {"worker": data["worker"], "verifier": data["verifier"]}
+        data["choice"] = next(
+            (o["key"] for o in MENU
+             if {"worker": o["worker"], "verifier": o["verifier"]} == stages),
+            "custom")
     return data
 
 

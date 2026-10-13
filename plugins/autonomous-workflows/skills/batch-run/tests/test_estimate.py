@@ -115,7 +115,11 @@ def test_the_menu_offers_only_opus_and_haiku(tmp_path):
     """Subagents run on Opus or Haiku only."""
     assert set(estimate.PRICES) == {"opus", "haiku"}
     assert estimate.price_for("opus") == (4.00, 20.00)
-    assert estimate.price_for("haiku") == (1.00, 5.00)
+    assert estimate.price_for("haiku") == (0.10, 0.50)
+    # Haiku 5.5 charges more once a prompt passes 100K tokens.
+    assert estimate.price_for("haiku", 100_000) == (0.10, 0.50)
+    assert estimate.price_for("haiku", 100_001) == (0.50, 2.50)
+    assert estimate.price_for("opus", 900_000) == (4.00, 20.00)
     projection = estimate.project(make_units(3, tmp_path), SPEC)
     for option in projection["options"]:
         for stage in ("worker", "verifier"):
@@ -188,6 +192,42 @@ def test_an_old_sonnet_config_is_remapped_and_flagged(tmp_path):
     assert config["worker"] == {"model": "haiku"}
     assert config["verifier"] == {"model": "opus"}
     assert config["remapped"] == ["worker: sonnet -> haiku", "verifier: sonnet -> opus"]
+    # The old menu key no longer exists, so the record names the one that matches.
+    assert config["choice"] == "haiku-write-opus-verify"
+
+
+@pytest.mark.parametrize("stage, expected, note", [
+    ({"model": "Opus"}, {"model": "opus"}, "worker: Opus -> opus"),
+    ({"model": "claude-opus-5-5"}, {"model": "opus"}, "worker: claude-opus-5-5 -> opus"),
+    ("opus", {"model": "opus"}, None),
+    ({"model": ["opus"]}, {"model": "haiku"}, 'worker: ["opus"] -> haiku'),
+    ({"model": None}, {"model": "haiku"}, "worker: null -> haiku"),
+    ({}, {"model": "haiku"}, "worker: null -> haiku"),
+    (None, {"model": "haiku"}, "worker: null -> haiku"),
+    ({"model": "haiku", "effort": "high"}, {"model": "haiku"},
+     "worker: effort high dropped, haiku takes no effort override"),
+])
+def test_a_hand_edited_worker_is_normalised_not_crashed_on(tmp_path, stage, expected, note):
+    cdir = tmp_path / "checkpoint"
+    cdir.mkdir()
+    (cdir / estimate.CONFIG_NAME).write_text(json.dumps({
+        "choice": "opus-both", "worker": stage, "verifier": {"model": "opus"},
+    }), encoding="utf-8")
+
+    config = estimate.load_config(cdir)
+    assert config["worker"] == expected
+    assert config["verifier"] == {"model": "opus"}
+    assert config.get("remapped", [None]) == [note]
+
+
+def test_a_stale_remap_note_in_the_file_is_not_carried_forward(tmp_path):
+    cdir = tmp_path / "checkpoint"
+    cdir.mkdir()
+    (cdir / estimate.CONFIG_NAME).write_text(json.dumps({
+        "choice": "opus-both", "worker": {"model": "opus"}, "verifier": {"model": "opus"},
+        "remapped": ["worker: sonnet -> haiku"],
+    }), encoding="utf-8")
+    assert "remapped" not in estimate.load_config(cdir)
 
 
 def test_a_current_config_carries_no_remap_note(tmp_path):

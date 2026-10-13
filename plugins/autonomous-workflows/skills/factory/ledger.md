@@ -16,8 +16,8 @@ resumes from here and redoes nothing.
 - Started: <YYYY-MM-DD HH:MM:SS>
 - Repo: <path> @ <remote>
 - Linear project: <name> (<id>)
-- Parent issue: <ELI-nnn>
-- PRD: <ELI-nnn>
+- Parent issue: <KEY-nnn>
+- PRD: <KEY-nnn>
 - Stack: <language>, <package manager>, test `<cmd>`, typecheck `<cmd>`, lint `<cmd>`
 - Lanes: <lane>, <lane>
 - Integration branch: factory/<feature-slug>
@@ -28,9 +28,9 @@ resumes from here and redoes nothing.
 
 | # | Linear | Title | Lane | Blocked by | Status | Branch | PR |
 |---|--------|-------|------|-----------|--------|--------|-----|
-| 1 | ELI-41 | Seed schema | data | none | Done | factory/eli-41-seed-schema | #12 |
-| 2 | ELI-42 | List view | ui | 1 | In progress | factory/eli-42-list-view | #13 |
-| 3 | ELI-43 | Export CSV | api | 1 | Parked (Q2) | | |
+| 1 | ABC-41 | Seed schema | data | none | Done | factory/abc-41-seed-schema | #12 |
+| 2 | ABC-42 | List view | ui | 1 | In progress | factory/abc-42-list-view | #13 |
+| 3 | ABC-43 | Export CSV | api | 1 | Parked (Q2) | | |
 
 Status is one of: Todo, In progress, Adversary, Fixing, Merging, Done, Parked (Qn), Failed.
 
@@ -38,7 +38,7 @@ Status is one of: Todo, In progress, Adversary, Fixing, Merging, Done, Parked (Q
 
 ### Q1: <one line question> [ANSWERED]
 
-- Blocks: ELI-43, ELI-47
+- Blocks: ABC-43, ABC-47
 - What is unresolved: <two sentences, no more>
 - Options: <a> / <b> / <c>
 - Recommendation: <one of them, and why in one line>
@@ -53,8 +53,8 @@ Status is one of: Todo, In progress, Adversary, Fixing, Merging, Done, Parked (Q
 One line each. Decisions the builders took without asking, so they are auditable
 and so the next run does not relitigate them.
 
-- ELI-41: table named `run_event`, singular, matches CONTEXT.md glossary
-- ELI-42: virtualised the list at 200 rows rather than paginating
+- ABC-41: table named `run_event`, singular, matches CONTEXT.md glossary
+- ABC-42: virtualised the list at 200 rows rather than paginating
 
 ## Dispatch log
 
@@ -63,10 +63,10 @@ Tickets held back by the ten agent cap get a queued line, so a stalled run shows
 whether it is waiting on work or waiting on slots. The header totals move with
 it, and the run stops for a check in once agents spawned passes four per ticket.
 
-- 09:14 ELI-41 dispatched (2 subagents). Green, 14 passed 0 failed, adversary clean, merged #12. Slot returned 09:41.
-- 09:41 ELI-42 dispatched. Green, adversary found 1, fixed, merged #13.
-- 09:41 ELI-43 dispatched. Parked as Q2 before any code.
-- 09:52 ELI-44 queued, cap full at 10 live. Dispatched 10:03 on ELI-42's slot.
+- 09:14 ABC-41 dispatched (2 subagents). Green, 14 passed 0 failed, adversary clean, merged #12. Slot returned 09:41.
+- 09:41 ABC-42 dispatched. Green, adversary found 1, fixed, merged #13.
+- 09:41 ABC-43 dispatched. Parked as Q2 before any code.
+- 09:52 ABC-44 queued, cap full at 10 live. Dispatched 10:03 on ABC-42's slot.
 ```
 
 ## Parking rules

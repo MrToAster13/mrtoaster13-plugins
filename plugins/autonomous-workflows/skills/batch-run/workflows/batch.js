@@ -24,17 +24,31 @@ const {
   models = { worker: { model: 'haiku' }, verifier: { model: 'opus' } },
 } = args || {}
 
-// Haiku rejects the effort parameter, so an effort override on it is dropped
-// rather than passed through to fail at agent-launch time. Any model other
-// than opus or haiku falls back to the stage default, so a stray 'sonnet'
-// from an old config never reaches agent().
+// On Bedrock, Vertex and Foundry the haiku alias resolves to Haiku 4.5, which
+// has no effort parameter, so an effort override on haiku is dropped rather
+// than passed through. 'Opus' and 'claude-opus-5-5' both mean opus. Any other
+// model falls back to the stage default without its effort override, so a
+// stray 'sonnet' from an old config never reaches agent().
 const ALLOWED_MODELS = ['opus', 'haiku']
+const normalizeModel = (value) => {
+  if (typeof value !== 'string') return null
+  const name = value.trim().toLowerCase()
+  return ALLOWED_MODELS.find((m) => name === m || name.startsWith('claude-' + m)) || name
+}
+const warned = new Set()
 const stageOpts = (stage, label, phase, schema) => {
   const fallback = stage === 'worker' ? 'haiku' : 'opus'
-  const cfg = (models && models[stage]) || { model: fallback }
-  const model = ALLOWED_MODELS.includes(cfg.model) ? cfg.model : fallback
+  const raw = models && models[stage]
+  const cfg = typeof raw === 'string' ? { model: raw } : (raw && typeof raw === 'object' ? raw : {})
+  const asked = normalizeModel(cfg.model)
+  const allowed = ALLOWED_MODELS.includes(asked)
+  const model = allowed ? asked : fallback
+  if (!allowed && cfg.model !== undefined && !warned.has(stage)) {
+    warned.add(stage)
+    log(`${stage}: model ${JSON.stringify(cfg.model)} is not allowed, running ${fallback}`)
+  }
   const opts = { label, phase, schema, model }
-  if (cfg.effort && opts.model !== 'haiku') opts.effort = cfg.effort
+  if (allowed && cfg.effort && model !== 'haiku') opts.effort = cfg.effort
   return opts
 }
 

@@ -103,8 +103,9 @@ judgement about what to park and what to dispatch is the one thing that cannot b
 delegated. Every agent below you runs `model: opus` too: builders, adversaries,
 the integrator, and polish. The one exception is a one off subagent a builder
 spawns, which runs on `model: haiku` for lookups and mechanical generation and
-`model: opus` for anything else. Pin no effort setting on a Haiku agent, because
-Haiku rejects the effort parameter. Never run an agent on Sonnet. A shallow
+`model: opus` for anything else. Pin no effort setting on a Haiku agent: on
+Bedrock, Vertex and Foundry the `haiku` alias still resolves to Haiku 4.5, which
+has no effort parameter. Never run an agent on Sonnet. A shallow
 review is a briefing problem, not a model problem. Fix the brief.
 
 ## Phase 3: The loop

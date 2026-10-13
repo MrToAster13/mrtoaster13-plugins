@@ -16,7 +16,7 @@ the merge. Keep the reference anyway, it is what links the PR to the ticket.
 <the end to end behaviour that now works, from the user's perspective, two or
 three sentences. Not a layer by layer list.>
 
-Closes ELI-<n>
+Closes <KEY>-<n>
 
 ## Acceptance criteria
 
@@ -65,7 +65,7 @@ gets drafted for the user in the normal way.
 - Adversary: <clean / n findings, fixed>
 - Decisions: <one line each, or "none">
 
-Unblocks: <ELI-nnn, ELI-nnn, or "nothing">
+Unblocks: <KEY-nnn, KEY-nnn, or "nothing">
 ```
 
 For a parked ticket, the same comment slot gets this instead, and the issue stays
@@ -77,7 +77,7 @@ in its current state rather than moving to Done:
 <the question, in one line.>
 
 Work completed before parking: <what landed, or "none, parked before any code">.
-Blocks: <ELI-nnn, ELI-nnn>
+Blocks: <KEY-nnn, KEY-nnn>
 ```
 
 ## The MVP bar
