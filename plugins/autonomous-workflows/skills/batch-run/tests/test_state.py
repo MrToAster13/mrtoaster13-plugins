@@ -11,6 +11,7 @@ import json
 import os
 import subprocess
 import sys
+import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -230,11 +231,19 @@ def test_a_record_nested_too_deep_reads_as_pending(batch):
     assert state.read_record(cdir, "unit-06") is None
 
 
-def test_a_lock_nested_too_deep_is_treated_as_stale(batch):
+@pytest.mark.parametrize("body", [
+    "", "{", "[" * 100_000 + "]" * 100_000, '{"at": "x"}', '{"at": 1e999}',
+    '{"at": 99999999999}',
+], ids=["empty", "truncated", "deep", "text-at", "infinite-at", "future-at"])
+def test_a_lock_is_aged_by_its_file_time_not_its_contents(batch, body):
     _, _, cdir = batch
-    state.lock_path(cdir, "unit-07").parent.mkdir(parents=True, exist_ok=True)
-    state.lock_path(cdir, "unit-07").write_text("[" * 100_000 + "]" * 100_000,
-                                               encoding="utf-8")
+    path = state.lock_path(cdir, "unit-07")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(body, encoding="utf-8")
+    # Fresh: a winner may have created it and not written it yet.
+    assert state.claim(cdir, "unit-07", lease_seconds=60) is False
+    old = time.time() - 120
+    os.utime(str(path), (old, old))
     assert state.claim(cdir, "unit-07", lease_seconds=60) is True
 
 

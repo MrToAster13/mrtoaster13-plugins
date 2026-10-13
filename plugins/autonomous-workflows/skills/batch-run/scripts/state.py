@@ -226,7 +226,12 @@ def claim(checkpoint_dir, unit_id, lease_seconds=DEFAULT_LEASE_SECONDS, owner=No
     Only needed when two runs of the same batch could overlap. A single
     workflow run dispatches each unit once, so it does not need this. Leases go
     stale rather than deadlocking: a lock older than `lease_seconds` is assumed
-    to belong to a process that died and gets stolen.
+    to belong to a process that died and gets stolen. The age comes from the
+    lock file's modified time, not its contents, so a lock a winner has created
+    but not yet written still counts as held, and a hand-edited `at` cannot
+    hold a unit forever. Two callers that find the same stale lock at the
+    same moment can both steal it, so keep the lease well above a unit's run
+    time.
     """
     path = lock_path(checkpoint_dir, unit_id)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -236,12 +241,12 @@ def claim(checkpoint_dir, unit_id, lease_seconds=DEFAULT_LEASE_SECONDS, owner=No
         fd = os.open(str(path), flags)
     except FileExistsError:
         try:
-            age = time.time() - json.loads(path.read_text(encoding="utf-8"))["at"]
-        except (OSError, ValueError, KeyError, TypeError, RecursionError):
+            age = time.time() - os.path.getmtime(str(path))
+        except OSError:
             age = lease_seconds + 1
-        # Strictly less than, so a zero-second lease is always stealable rather
-        # than depending on whether the clock ticked between two calls.
-        if age < lease_seconds:
+        # A zero-second lease is always stealable, even when the file time
+        # reads a little ahead of the clock.
+        if lease_seconds > 0 and age < lease_seconds:
             return False
         try:
             os.unlink(str(path))
