@@ -68,6 +68,10 @@ looks good returns yes every time.
 
    First check `load-config`: if a prior run already chose models, reuse them
    silently. A resume must not re-decide something the user already answered.
+   The one exception: if the result carries a `remapped` list, a stage named a
+   model that is no longer allowed (an old Sonnet checkpoint) and was moved to
+   that stage's default, Haiku writer or Opus verifier. Run on the remapped
+   models and tell the user each remap in your final message.
 
    ```
    python ...\scripts\estimate.py load-config --dir <checkpoint>
@@ -84,8 +88,8 @@ looks good returns yes every time.
    ```
 
    **If you cannot ask** (background run, non-interactive session), do not
-   stall and do not silently downgrade. Run at Sonnet on both stages, and say
-   in your final message that the gate was skipped and why.
+   stall and do not silently downgrade. Run the default (Haiku writer, Opus
+   verifier), and say in your final message that the gate was skipped and why.
 
    Two things the menu encodes that are easy to get wrong:
 
@@ -142,9 +146,10 @@ looks good returns yes every time.
 ## Scale
 
 Concurrency is capped at `min(16, cores - 2)` per run, so a batch of 200 units
-is fine to submit whole. Sonnet is the floor on both stages: the workflow sets
-`opts.model` explicitly rather than inheriting the session model, because
-inheriting would run a 30-unit batch at 60 Opus agents without saying so.
+is fine to submit whole. The default is a Haiku writer and an Opus verifier:
+the workflow sets `opts.model` explicitly rather than inheriting the session
+model, because inheriting would run a 30-unit batch at 60 Opus agents without
+saying so.
 
 Haiku 4.5 rejects the `effort` parameter outright. `estimate.py` refuses to
 build an option that pairs the two, and `batch.js` drops an effort override on

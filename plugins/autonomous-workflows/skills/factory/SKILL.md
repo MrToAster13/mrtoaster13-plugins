@@ -46,12 +46,13 @@ A wrong binding writes to the wrong Linear project and is expensive to unpick.
    to the default branch itself.
 3. **Tracker config.** Read `docs/agents/issue-tracker.md` and
    `docs/agents/domain.md`. Missing? Run `/setup-matt-pocock-skills` first.
-4. **Linear.** Resolve the project from the map in the user's `CLAUDE.md`. If the
-   repo is not in that map, ask which project. Never invent one. Confirm the
-   parent or spec issue by ID out loud before writing anything. List the team's
-   existing states and labels, and agree with the user which existing one marks a
-   parked ticket. If none fits, a park lives in the ledger and in a comment on the
-   issue. Never create a state or label to cover the gap.
+4. **Linear.** Resolve the project from the user's repo to project mapping,
+   wherever their setup keeps it. If there is no mapping, or the repo is not in
+   it, ask which project. Never invent one. Confirm the parent or spec issue by
+   ID out loud before writing anything. List the team's existing states and
+   labels, and agree with the user which existing one marks a parked ticket.
+   If none fits, a park lives in the ledger and in a comment on the issue.
+   Never create a state or label to cover the gap.
 5. **GitHub.** Confirm `gh auth status` and that the remote exists. With no
    remote, say so plainly and run in local commit mode rather than inventing a PR
    flow.
@@ -67,9 +68,10 @@ A wrong binding writes to the wrong Linear project and is expensive to unpick.
    ever lives in a worktree that gets deleted.
 8. **Approve the Linear comment template.** Show the user the template from
    [closing.md](./closing.md) once. On approval, agents post filled copies for the
-   rest of the run without asking again. This is the only standing exception to
-   the user's draft first rule, it covers this run only, and it covers progress
-   comments only. Anything outside the template still gets drafted.
+   rest of the run without asking again. If the user keeps a draft first rule
+   for tracker writes, this is the only standing exception to it. It covers this
+   run only, and it covers progress comments only. Anything outside the
+   template still gets drafted.
 
 Report the binding as a short table and wait for a go.
 
@@ -98,10 +100,12 @@ which one you are using, once.
 
 **Models are fixed.** The orchestrator, meaning you, runs on Opus, because
 judgement about what to park and what to dispatch is the one thing that cannot be
-delegated. Every agent below you runs `model: sonnet`, with no exceptions:
-builders, adversaries, the integrator, polish, and every one off subagent a
-builder spawns. Do not raise an agent to Opus because a review came back shallow.
-A shallow review is a briefing problem. Fix the brief.
+delegated. Every agent below you runs `model: opus` too: builders, adversaries,
+the integrator, and polish. The one exception is a one off subagent a builder
+spawns, which runs on `model: haiku` for lookups and mechanical generation and
+`model: opus` for anything else. Pin no effort setting on a Haiku agent, because
+Haiku rejects the effort parameter. Never run an agent on Sonnet. A shallow
+review is a briefing problem, not a model problem. Fix the brief.
 
 ## Phase 3: The loop
 
@@ -127,7 +131,7 @@ Agent(
   subagent_type: "factory-builder-<lane>",
   isolation: "worktree",
   run_in_background: true,
-  model: "sonnet",
+  model: "opus",
   prompt: <brief from team.md + PRD + CONTEXT.md + ADRs + ticket body>
 )
 ```
@@ -245,8 +249,7 @@ Never surface a question you could have decided. The parking rules are in
    with the full ticket list and test counts in the body, and leave it for the
    user. Merging it is their call, not yours.
 5. Post the closing comment on the Linear parent issue and move it to Done.
-6. Write the HTML report to `%TEMP%` per the user's `CLAUDE.md` task completion
-   rules, open it, and give the absolute path.
+6. Write the HTML report to `%TEMP%`, open it, and give the absolute path.
 7. In chat, give the verdict only: tickets shipped, tickets parked, test counts,
    what the user has to decide. The report carries the detail.
 

@@ -53,7 +53,7 @@ Hard stops before iteration 10:
 
 ## Stage 3: Adversarial review
 
-Spawn a sub-agent (model: `sonnet`) with the brief in [`adversarial-review.md`](adversarial-review.md). Its job is to break the implementation, not to praise it. Green tests are the input, not the verdict. The bugs that matter here are the ones the tests were written to miss.
+Spawn a sub-agent (model: `opus`) with the brief in [`adversarial-review.md`](adversarial-review.md). Its job is to break the implementation, not to praise it. Green tests are the input, not the verdict. The bugs that matter here are the ones the tests were written to miss.
 
 Every finding must carry a concrete failure scenario: specific inputs or state, and the wrong output or crash that results. **A finding with no reproducible scenario is dropped.** Report how many were dropped so silent filtering doesn't happen at this layer either.
 

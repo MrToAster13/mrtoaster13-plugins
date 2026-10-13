@@ -11,8 +11,9 @@ export const meta = {
 // Everything domain-specific arrives through args. The skill reads units.json
 // and spec.md on the outside and passes them in, because workflow scripts have
 // no filesystem access of their own.
-// models defaults to Sonnet on both stages rather than inheriting the session
-// model. Inheriting would silently run a 30-unit batch at 60 Opus agents.
+// models defaults to a Haiku writer and an Opus verifier rather than inheriting
+// the session model. Inheriting would silently run a 30-unit batch at 60 Opus
+// agents, and the session model may be one subagents must not run on.
 const {
   units = [],
   worker = '',
@@ -20,14 +21,19 @@ const {
   checkpointDir = 'checkpoint',
   statePath = 'state.py',
   maxAttempts = 2,
-  models = { worker: { model: 'sonnet' }, verifier: { model: 'sonnet' } },
+  models = { worker: { model: 'haiku' }, verifier: { model: 'opus' } },
 } = args || {}
 
 // Haiku rejects the effort parameter, so an effort override on it is dropped
-// rather than passed through to fail at agent-launch time.
+// rather than passed through to fail at agent-launch time. Any model other
+// than opus or haiku falls back to the stage default, so a stray 'sonnet'
+// from an old config never reaches agent().
+const ALLOWED_MODELS = ['opus', 'haiku']
 const stageOpts = (stage, label, phase, schema) => {
-  const cfg = (models && models[stage]) || { model: 'sonnet' }
-  const opts = { label, phase, schema, model: cfg.model || 'sonnet' }
+  const fallback = stage === 'worker' ? 'haiku' : 'opus'
+  const cfg = (models && models[stage]) || { model: fallback }
+  const model = ALLOWED_MODELS.includes(cfg.model) ? cfg.model : fallback
+  const opts = { label, phase, schema, model }
   if (cfg.effort && opts.model !== 'haiku') opts.effort = cfg.effort
   return opts
 }

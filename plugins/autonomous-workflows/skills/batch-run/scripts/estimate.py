@@ -11,7 +11,8 @@ the menu is priced in dollars rather than tokens.
 CLI:
     python estimate.py project --units units.json --spec spec.md [--attempts 2]
         [--ask-above 100000] [--worker-out 1500] [--verifier-out 400] [--text]
-    python estimate.py save-config --dir checkpoint --choice sonnet-both
+    python estimate.py save-config --dir checkpoint --units units.json --spec spec.md
+        --choice haiku-write-opus-verify
     python estimate.py load-config --dir checkpoint
 """
 
@@ -20,23 +21,23 @@ from __future__ import annotations
 import argparse
 import json
 import sys
-from datetime import date
 from pathlib import Path
 
 import state
 
 CONFIG_NAME = "batch-config.json"
 
-# USD per million tokens. Sonnet 5 has introductory pricing through the date
-# below, after which it reverts to the standard rate.
-SONNET_INTRO_ENDS = date(2026, 8, 31)
+# USD per million tokens. Subagents run on Opus or Haiku only, so those are the
+# only two models the menu prices.
 PRICES = {
-    "opus": {"id": "claude-opus-4-8", "in": 5.00, "out": 25.00, "effort": True},
-    "sonnet": {"id": "claude-sonnet-5", "in": 3.00, "out": 15.00, "effort": True,
-               "intro": {"in": 2.00, "out": 10.00}},
+    "opus": {"id": "claude-opus-5-5", "in": 4.00, "out": 20.00, "effort": True},
     # Haiku 4.5 rejects the effort parameter. Never pair it with an effort override.
     "haiku": {"id": "claude-haiku-4-5", "in": 1.00, "out": 5.00, "effort": False},
 }
+
+# What a stage falls back to when a saved config names a model that is no
+# longer allowed, such as a checkpoint written before Sonnet was dropped.
+STAGE_DEFAULTS = {"worker": "haiku", "verifier": "opus"}
 
 DEFAULT_WORKER_OUT = 1500
 DEFAULT_VERIFIER_OUT = 400
@@ -44,11 +45,8 @@ DEFAULT_ASK_ABOVE = 100_000
 CHARS_PER_TOKEN = 4
 
 
-def price_for(alias, on=None):
+def price_for(alias):
     row = PRICES[alias]
-    intro = row.get("intro")
-    if intro and (on or date.today()) <= SONNET_INTRO_ENDS:
-        return intro["in"], intro["out"]
     return row["in"], row["out"]
 
 
@@ -95,7 +93,7 @@ def split_spec(spec_text):
 
 
 def project(units, spec_text, attempts=2, worker_out=DEFAULT_WORKER_OUT,
-            verifier_out=DEFAULT_VERIFIER_OUT, ask_above=DEFAULT_ASK_ABOVE, on=None):
+            verifier_out=DEFAULT_VERIFIER_OUT, ask_above=DEFAULT_ASK_ABOVE):
     sections = split_spec(spec_text)
     spec_in = {k: _tokens(v) for k, v in sections.items()}
     payload = sum(_payload_tokens(u) for u in units)
@@ -111,29 +109,29 @@ def project(units, spec_text, attempts=2, worker_out=DEFAULT_WORKER_OUT,
     worst_out = typical_out * attempts
 
     def cost(worker_model, verifier_model):
-        w_in, w_out = price_for(worker_model, on)
-        v_in, v_out = price_for(verifier_model, on)
+        w_in, w_out = price_for(worker_model)
+        v_in, v_out = price_for(verifier_model)
         return (
             worker_in / 1e6 * w_in + (n * worker_out) / 1e6 * w_out
             + verifier_in / 1e6 * v_in + (n * verifier_out) / 1e6 * v_out
         )
 
     options = [
-        {"key": "sonnet-both", "label": "Sonnet writer, Sonnet verifier",
-         "worker": {"model": "sonnet"}, "verifier": {"model": "sonnet"},
-         "note": "the default, and your standing subagent rule"},
-        {"key": "haiku-write-sonnet-verify", "label": "Haiku writer, Sonnet verifier",
-         "worker": {"model": "haiku"}, "verifier": {"model": "sonnet"},
-         "note": "verification keeps its judgment; a weak writer gets caught"},
+        {"key": "haiku-write-opus-verify", "label": "Haiku writer, Opus verifier",
+         "worker": {"model": "haiku"}, "verifier": {"model": "opus"},
+         "note": "the default: verification keeps its judgment; a weak writer gets caught"},
+        {"key": "opus-both", "label": "Opus writer, Opus verifier",
+         "worker": {"model": "opus"}, "verifier": {"model": "opus"},
+         "note": "strongest writer too, at the highest price"},
         {"key": "haiku-both", "label": "Haiku writer, Haiku verifier",
          "worker": {"model": "haiku"}, "verifier": {"model": "haiku"},
          "note": "cheapest, and the weakest catch on invented facts"},
-        {"key": "sonnet-low-effort", "label": "Sonnet both, low reasoning effort",
-         "worker": {"model": "sonnet", "effort": "low"},
-         "verifier": {"model": "sonnet", "effort": "low"},
+        {"key": "opus-low-effort", "label": "Opus both, low reasoning effort",
+         "worker": {"model": "opus", "effort": "low"},
+         "verifier": {"model": "opus", "effort": "low"},
          "note": "same price per token, fewer tokens by an amount this has not measured"},
     ]
-    baseline = cost("sonnet", "sonnet")
+    baseline = cost("haiku", "opus")
     for option in options:
         option["cost_usd"] = round(cost(option["worker"]["model"],
                                         option["verifier"]["model"]), 2)
@@ -164,7 +162,7 @@ def render(projection):
     lines = [
         "Batch: {} units, {} agents, up to {} attempts each.".format(
             projection["units"], projection["agents"], projection["attempts"]),
-        "Rough projection: ~{:,} output tokens at Sonnet ({:,} if every unit retries).".format(
+        "Rough projection: ~{:,} output tokens ({:,} if every unit retries).".format(
             projection["projected_output_typical"], projection["projected_output_worst"]),
         "",
     ]
@@ -211,7 +209,13 @@ def save_config(checkpoint_dir, choice, projection_options):
 
 
 def load_config(checkpoint_dir):
-    """Return the models a prior run committed to, or None if there is no record."""
+    """Return the models a prior run committed to, or None if there is no record.
+
+    A stage whose model is not one the menu prices (an old Sonnet checkpoint,
+    a hand edit) is remapped to that stage's default, and each remap is listed
+    under "remapped" so the caller can tell the user instead of resuming on a
+    model subagents must not run on.
+    """
     path = Path(checkpoint_dir) / CONFIG_NAME
     try:
         with open(path, "r", encoding="utf-8") as fh:
@@ -220,6 +224,15 @@ def load_config(checkpoint_dir):
         return None
     if not isinstance(data, dict) or "worker" not in data or "verifier" not in data:
         return None
+    remapped = []
+    for stage, default in STAGE_DEFAULTS.items():
+        cfg = data[stage]
+        model = cfg.get("model") if isinstance(cfg, dict) else None
+        if model not in PRICES:
+            data[stage] = {"model": default}
+            remapped.append("{}: {} -> {}".format(stage, model, default))
+    if remapped:
+        data["remapped"] = remapped
     return data
 
 

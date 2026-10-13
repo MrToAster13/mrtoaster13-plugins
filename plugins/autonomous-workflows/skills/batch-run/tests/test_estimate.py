@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import json
 import sys
-from datetime import date
 from pathlib import Path
 
 import pytest
@@ -97,7 +96,6 @@ def test_menu_never_puts_effort_on_a_model_that_rejects_it(tmp_path):
 
 def test_a_bad_pairing_is_rejected_loudly():
     assert estimate.supports_effort("haiku") is False
-    assert estimate.supports_effort("sonnet") is True
     assert estimate.supports_effort("opus") is True
 
 
@@ -105,21 +103,23 @@ def test_downgrades_are_cheaper_and_the_default_is_first(tmp_path):
     projection = estimate.project(make_units(20, tmp_path), SPEC)
     by_key = {o["key"]: o for o in projection["options"]}
 
-    assert projection["options"][0]["key"] == "sonnet-both"
-    assert by_key["sonnet-both"]["share_of_default"] == 1.0
-    assert by_key["haiku-both"]["cost_usd"] < by_key["haiku-write-sonnet-verify"]["cost_usd"]
-    assert by_key["haiku-write-sonnet-verify"]["cost_usd"] < by_key["sonnet-both"]["cost_usd"]
+    assert projection["options"][0]["key"] == "haiku-write-opus-verify"
+    assert by_key["haiku-write-opus-verify"]["share_of_default"] == 1.0
+    assert by_key["haiku-both"]["cost_usd"] < by_key["haiku-write-opus-verify"]["cost_usd"]
+    assert by_key["haiku-write-opus-verify"]["cost_usd"] < by_key["opus-both"]["cost_usd"]
     # An effort change is not a price change, so it must not claim a discount.
-    assert by_key["sonnet-low-effort"]["cost_usd"] == by_key["sonnet-both"]["cost_usd"]
+    assert by_key["opus-low-effort"]["cost_usd"] == by_key["opus-both"]["cost_usd"]
 
 
-def test_sonnet_intro_pricing_expires(tmp_path):
-    during = estimate.price_for("sonnet", on=date(2026, 7, 23))
-    after = estimate.price_for("sonnet", on=date(2026, 9, 1))
-
-    assert during == (2.00, 10.00)
-    assert after == (3.00, 15.00)
-    assert estimate.price_for("haiku", on=date(2026, 9, 1)) == (1.00, 5.00)
+def test_the_menu_offers_only_opus_and_haiku(tmp_path):
+    """Subagents run on Opus or Haiku only."""
+    assert set(estimate.PRICES) == {"opus", "haiku"}
+    assert estimate.price_for("opus") == (4.00, 20.00)
+    assert estimate.price_for("haiku") == (1.00, 5.00)
+    projection = estimate.project(make_units(3, tmp_path), SPEC)
+    for option in projection["options"]:
+        for stage in ("worker", "verifier"):
+            assert option[stage]["model"] in ("opus", "haiku"), option["key"]
 
 
 def test_bigger_payloads_cost_more(tmp_path):
@@ -165,13 +165,38 @@ def test_chosen_models_persist_to_the_resume(tmp_path):
 
     assert estimate.load_config(cdir) is None  # nothing chosen yet
 
-    saved = estimate.save_config(cdir, "haiku-write-sonnet-verify", projection["options"])
+    saved = estimate.save_config(cdir, "haiku-write-opus-verify", projection["options"])
     assert saved["worker"] == {"model": "haiku"}
 
     reloaded = estimate.load_config(cdir)
     assert reloaded["worker"] == {"model": "haiku"}
-    assert reloaded["verifier"] == {"model": "sonnet"}
-    assert reloaded["choice"] == "haiku-write-sonnet-verify"
+    assert reloaded["verifier"] == {"model": "opus"}
+    assert reloaded["choice"] == "haiku-write-opus-verify"
+
+
+def test_an_old_sonnet_config_is_remapped_and_flagged(tmp_path):
+    """A checkpoint saved before Sonnet was dropped must not resume on Sonnet."""
+    cdir = tmp_path / "checkpoint"
+    cdir.mkdir()
+    (cdir / estimate.CONFIG_NAME).write_text(json.dumps({
+        "choice": "sonnet-both",
+        "worker": {"model": "sonnet"},
+        "verifier": {"model": "sonnet", "effort": "low"},
+    }), encoding="utf-8")
+
+    config = estimate.load_config(cdir)
+    assert config["worker"] == {"model": "haiku"}
+    assert config["verifier"] == {"model": "opus"}
+    assert config["remapped"] == ["worker: sonnet -> haiku", "verifier: sonnet -> opus"]
+
+
+def test_a_current_config_carries_no_remap_note(tmp_path):
+    projection = estimate.project(make_units(3, tmp_path), SPEC)
+    cdir = tmp_path / "checkpoint"
+    estimate.save_config(cdir, "opus-low-effort", projection["options"])
+    config = estimate.load_config(cdir)
+    assert "remapped" not in config
+    assert config["verifier"] == {"model": "opus", "effort": "low"}
 
 
 def test_a_mangled_config_reads_as_no_choice(tmp_path):
@@ -179,7 +204,7 @@ def test_a_mangled_config_reads_as_no_choice(tmp_path):
     cdir.mkdir()
     (cdir / estimate.CONFIG_NAME).write_text('{"choice": "haiku-b', encoding="utf-8")
 
-    assert estimate.load_config(cdir) is None  # falls back to the Sonnet default
+    assert estimate.load_config(cdir) is None  # falls back to the Haiku-writer, Opus-verifier default
 
 
 def test_an_unknown_choice_is_rejected(tmp_path):
@@ -193,7 +218,7 @@ def test_config_does_not_collide_with_unit_records(tmp_path):
     units = make_units(3, tmp_path)
     cdir = tmp_path / "checkpoint"
     projection = estimate.project(units, SPEC)
-    estimate.save_config(cdir, "sonnet-both", projection["options"])
+    estimate.save_config(cdir, "opus-both", projection["options"])
     for unit in units:
         state.record(cdir, unit["id"], "verified")
 
@@ -230,7 +255,7 @@ def test_cli_project_renders_both_shapes(tmp_path):
         stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     body = as_text.stdout.decode()
     assert "80 units, 160 agents" in body
-    assert "Sonnet writer, Sonnet verifier" in body
+    assert "Haiku writer, Opus verifier" in body
     assert "Estimate is rough" in body  # never presented as measured
 
 

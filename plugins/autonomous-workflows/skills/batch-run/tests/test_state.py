@@ -294,13 +294,13 @@ def test_verifying_keeps_the_artifact_path_the_writer_recorded(tmp_path):
     succeeds, so a finished batch has nothing on disk saying where its outputs
     went.
     """
-    state.record(str(tmp_path), "alpha", "written", artifact=r"C:\out\alpha.md", worker="sonnet")
+    state.record(str(tmp_path), "alpha", "written", artifact=r"C:\out\alpha.md", worker="haiku")
     state.record(str(tmp_path), "alpha", "verified", reason="holds up")
 
     rec = state.read_record(str(tmp_path), "alpha")
     assert rec["status"] == "verified"
     assert rec["artifact"] == r"C:\out\alpha.md"
-    assert rec["worker"] == "sonnet"
+    assert rec["worker"] == "haiku"
     assert rec["reason"] == "holds up"
 
 
