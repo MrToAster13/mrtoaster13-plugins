@@ -191,7 +191,12 @@ def test_an_old_sonnet_config_is_remapped_and_flagged(tmp_path):
     config = estimate.load_config(cdir)
     assert config["worker"] == {"model": "haiku"}
     assert config["verifier"] == {"model": "opus"}
-    assert config["remapped"] == ["worker: sonnet -> haiku", "verifier: sonnet -> opus"]
+    assert config["remapped"] == [
+        "worker: sonnet -> haiku",
+        "verifier: sonnet -> opus",
+        "verifier: effort low dropped with the old model",
+        "choice: sonnet-both -> haiku-write-opus-verify",
+    ]
     # The old menu key no longer exists, so the record names the one that matches.
     assert config["choice"] == "haiku-write-opus-verify"
 
@@ -217,7 +222,8 @@ def test_a_hand_edited_worker_is_normalised_not_crashed_on(tmp_path, stage, expe
     config = estimate.load_config(cdir)
     assert config["worker"] == expected
     assert config["verifier"] == {"model": "opus"}
-    assert config.get("remapped", [None]) == [note]
+    worker_notes = [n for n in config.get("remapped", []) if n.startswith("worker:")]
+    assert worker_notes == ([note] if note else [])
 
 
 def test_a_stale_remap_note_in_the_file_is_not_carried_forward(tmp_path):
@@ -329,3 +335,165 @@ def test_the_menu_prints_the_slug_next_to_each_number(tmp_path):
     body = estimate.render(projection)
     for option in projection["options"]:
         assert "--choice {}".format(option["key"]) in body
+
+
+# --- model names are matched on whole words ------------------------------
+
+@pytest.mark.parametrize("raw, expected", [
+    ("opus", "opus"),
+    (" HAIKU ", "haiku"),
+    ("Opus 5.5", "opus"),
+    ("opus[1m]", "opus"),
+    ("claude-opus-5-5", "opus"),
+    ("claude-opus-4-6", "opus"),
+    ("us.anthropic.claude-opus-5-5", "opus"),
+    ("anthropic.claude-haiku-5-5-v1:0", "haiku"),
+    ("claude-opusx", "claude-opusx"),
+    ("haikus", "haikus"),
+    ("sonnet-opus", "sonnet-opus"),
+    ("claude-sonnet-5-5", "claude-sonnet-5-5"),
+    ("", ""),
+    (5, None),
+    (None, None),
+])
+def test_normalize_model_matches_whole_words_only(raw, expected):
+    assert estimate.normalize_model(raw) == expected
+
+
+def write_config(cdir, payload):
+    cdir.mkdir(exist_ok=True)
+    (cdir / estimate.CONFIG_NAME).write_text(json.dumps(payload), encoding="utf-8")
+
+
+@pytest.mark.parametrize("raw, model", [
+    ("claude-opusx", "haiku"),
+    ("us.anthropic.claude-opus-5-5", "opus"),
+    ("Opus 5.5", "opus"),
+])
+def test_load_config_rejects_a_near_miss_and_maps_a_provider_id(tmp_path, raw, model):
+    cdir = tmp_path / "checkpoint"
+    write_config(cdir, {"choice": "x", "worker": {"model": raw}, "verifier": {"model": "opus"}})
+    config = estimate.load_config(cdir)
+    assert config["worker"] == {"model": model}
+    assert "worker: {} -> {}".format(raw, model) in config["remapped"]
+
+
+# --- effort is validated -------------------------------------------------
+
+@pytest.mark.parametrize("effort, kept, note", [
+    ("high", "high", None),
+    ("LOW", "low", "verifier: effort LOW -> low"),
+    (" max ", "max", "verifier: effort  max  -> max"),
+    ("xhigh", "xhigh", None),
+    ("turbo", None, "verifier: effort turbo dropped, not one of low, medium, high, xhigh, max"),
+    ("", None, "verifier: effort  dropped, not one of low, medium, high, xhigh, max"),
+    (3, None, "verifier: effort 3 dropped, not one of low, medium, high, xhigh, max"),
+    (True, None, "verifier: effort true dropped, not one of low, medium, high, xhigh, max"),
+    (None, None, None),
+])
+def test_an_invalid_effort_is_dropped_and_reported(tmp_path, effort, kept, note):
+    cdir = tmp_path / "checkpoint"
+    write_config(cdir, {"choice": "custom", "worker": {"model": "haiku"},
+                        "verifier": {"model": "opus", "effort": effort}})
+    config = estimate.load_config(cdir)
+    expected = {"model": "opus"}
+    if kept:
+        expected["effort"] = kept
+    assert config["verifier"] == expected
+    verifier_notes = [n for n in config.get("remapped", []) if n.startswith("verifier:")]
+    assert verifier_notes == ([note] if note else [])
+
+
+# --- Haiku's price tier is set per request -------------------------------
+
+def test_each_unit_is_priced_on_its_own_prompt(tmp_path):
+    """One unit over 100K tokens pays the long tier even when the average does not.
+
+    Pricing per unit makes the projection additive: a batch costs what its
+    units cost one at a time. Pricing on the average prompt broke that.
+    """
+    big = tmp_path / "big.txt"
+    big.write_text("x" * 600_000, encoding="utf-8")  # 150K tokens
+    units = [{"id": "big", "jd": str(big)}] + make_units(3, tmp_path)
+
+    def haiku_both(batch):
+        options = estimate.project(batch, SPEC)["options"]
+        return next(o["cost_usd"] for o in options if o["key"] == "haiku-both")
+
+    alone = sum(haiku_both([unit]) for unit in units)
+    assert haiku_both(units) == pytest.approx(alone, abs=0.02)
+    # The big unit alone is priced at $0.50 per million input tokens, both stages.
+    assert haiku_both(units[:1]) >= round(2 * 150_000 * 0.50 / 1e6, 2)
+
+
+def test_an_empty_batch_costs_nothing(tmp_path):
+    projection = estimate.project([], SPEC)
+    assert all(o["cost_usd"] == 0 for o in projection["options"])
+    assert all(o["share_of_default"] == 1.0 for o in projection["options"])
+
+
+# --- choice always matches the stages ------------------------------------
+
+@pytest.mark.parametrize("choice, worker, verifier, expected", [
+    ("haiku-both", {"model": "opus"}, {"model": "opus"}, "opus-both"),
+    (None, {"model": "opus"}, {"model": "opus"}, "opus-both"),
+    ("opus-both", {"model": "opus", "effort": "high"}, {"model": "opus"}, "custom"),
+    ("custom", {"model": "opus", "effort": "low"}, {"model": "opus", "effort": "low"},
+     "opus-low-effort"),
+])
+def test_a_stale_choice_is_corrected_on_its_own(tmp_path, choice, worker, verifier, expected):
+    cdir = tmp_path / "checkpoint"
+    payload = {"worker": worker, "verifier": verifier}
+    if choice is not None:
+        payload["choice"] = choice
+    write_config(cdir, payload)
+    config = estimate.load_config(cdir)
+    assert config["choice"] == expected
+    shown = choice if choice is not None else "null"
+    assert config["remapped"] == ["choice: {} -> {}".format(shown, expected)]
+
+
+# --- corrections are written back ----------------------------------------
+
+def test_a_remap_is_written_back_so_the_next_load_is_clean(tmp_path):
+    cdir = tmp_path / "checkpoint"
+    write_config(cdir, {"choice": "sonnet-both", "worker": {"model": "sonnet"},
+                        "verifier": {"model": "Opus", "effort": "HIGH"}})
+    first = estimate.load_config(cdir)
+    assert first["remapped"]
+
+    on_disk = json.loads((cdir / estimate.CONFIG_NAME).read_text(encoding="utf-8"))
+    assert on_disk == {"choice": "custom", "worker": {"model": "haiku"},
+                       "verifier": {"model": "opus", "effort": "high"}}
+
+    second = estimate.load_config(cdir)
+    assert "remapped" not in second
+    assert {k: second[k] for k in on_disk} == on_disk
+
+
+def test_a_failed_write_back_is_reported_and_the_models_still_load(tmp_path, monkeypatch):
+    cdir = tmp_path / "checkpoint"
+    write_config(cdir, {"choice": "sonnet-both", "worker": {"model": "sonnet"},
+                        "verifier": {"model": "opus"}})
+
+    def refuse(path, payload):
+        raise OSError("read-only checkpoint")
+
+    monkeypatch.setattr(estimate.state, "_atomic_write_json", refuse)
+    config = estimate.load_config(cdir)
+    assert config["worker"] == {"model": "haiku"}
+    assert config["remapped"][-1] == "not written back: read-only checkpoint"
+    # The file is untouched, so the next load reports the same remap again.
+    raw = json.loads((cdir / estimate.CONFIG_NAME).read_text(encoding="utf-8"))
+    assert raw["worker"] == {"model": "sonnet"}
+
+
+# --- the provider caveat -------------------------------------------------
+
+def test_the_provider_caveat_names_every_provider_and_labels_the_guesses():
+    skill = (Path(__file__).resolve().parents[1] / "SKILL.md").read_text(encoding="utf-8")
+    scale = skill.split("## Scale", 1)[1].split("\n## ", 1)[0]
+    for word in ("Bedrock", "Vertex", "Foundry", "mantle", "anthropic_aws",
+                 "anthropic_google_cloud", "gateway", "Haiku 4.5",
+                 "Opus 4.6", "Opus 4.7", "unverified"):
+        assert word in scale, word

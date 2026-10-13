@@ -68,12 +68,17 @@ looks good returns yes every time.
 
    First check `load-config`: if a prior run already chose models, reuse them
    silently. A resume must not re-decide something the user already answered.
-   The one exception: if the result carries a `remapped` list, the saved record
-   was changed on load. A stage that named a model no longer allowed (an old
-   Sonnet checkpoint) moved to that stage's default, Haiku writer or Opus
-   verifier. A spelling such as `Opus` became its alias, and an effort override
-   on Haiku was dropped. Run on the models `load-config` returned and tell the
-   user each remap in your final message.
+   The one exception: if the result carries a `remapped` list, `load-config`
+   corrected the saved record. A stage that named a model no longer allowed (an
+   old Sonnet checkpoint, or a near miss such as `claude-opusx`) moved to that
+   stage's default, Haiku writer or Opus verifier. A spelling such as `Opus 5.5`
+   or `us.anthropic.claude-opus-5-5` became its alias. An effort that is not
+   `low`, `medium`, `high`, `xhigh` or `max`, and any effort on Haiku, was
+   dropped. `choice` now names the menu option the stages match, or `custom`.
+   The corrected record is written back to the checkpoint, so the next resume
+   loads it clean; if that write failed, the last entry says `not written back`.
+   Run on the models `load-config` returned and tell the user each entry in your
+   final message.
 
    ```
    python ...\scripts\estimate.py load-config --dir <checkpoint>
@@ -153,12 +158,25 @@ The workflow sets `opts.model` on every agent rather than inheriting the session
 model, so an Opus session runs 30 Haiku writers and 30 Opus verifiers for 30
 units, not 60 Opus agents.
 
-The `haiku` alias resolves to Haiku 5.5 on the Claude API and to Haiku 4.5 on
-Bedrock, Vertex and Foundry. Haiku 4.5 has no `effort` parameter, so
-`estimate.py` refuses to build an option that pairs Haiku with an effort
-override, and `batch.js` drops one on a Haiku stage rather than passing it
-through. The menu prices Haiku 5.5, so on those providers the Haiku share of
-each figure is about ten times too low.
+The menu prices the models the aliases resolve to on the Claude API: Opus 5.5
+at $4 / $20 per million input / output tokens, and Haiku 5.5 at $0.10 / $0.50,
+or $0.50 / $2.50 for a request whose prompt is over 100K tokens. On other
+providers Claude Code serves older models under the same aliases. In the alias
+table of Claude Code 2.1.296:
+
+- `haiku` is Haiku 4.5 ($1 / $5) on Amazon Bedrock, Google Vertex AI and
+  Microsoft Foundry, and on the providers that table names only by the ids
+  `mantle`, `anthropic_aws`, `anthropic_google_cloud` and `gateway`. On those
+  providers the Haiku share of each figure is about ten times too low for a
+  prompt of 100K tokens or fewer, and about half the real price above that.
+- `opus` is Opus 4.6 on Foundry and Opus 4.7 on `gateway`. Their prices are
+  unverified here, so the Opus share of each figure is unverified on those two.
+
+The same binary also carries older alias tables, one of which maps `haiku` to
+Haiku 4.5 everywhere. Which table a given session uses is unverified. Haiku 4.5
+has no `effort` parameter, so `estimate.py` refuses to build an option that
+pairs Haiku with an effort override, `load-config` drops one, and `batch.js`
+drops one on a Haiku stage and logs it rather than passing it through.
 
 ## Failure modes worth knowing
 

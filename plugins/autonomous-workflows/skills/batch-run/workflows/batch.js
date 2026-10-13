@@ -24,18 +24,35 @@ const {
   models = { worker: { model: 'haiku' }, verifier: { model: 'opus' } },
 } = args || {}
 
-// On Bedrock, Vertex and Foundry the haiku alias resolves to Haiku 4.5, which
-// has no effort parameter, so an effort override on haiku is dropped rather
-// than passed through. 'Opus' and 'claude-opus-5-5' both mean opus. Any other
-// model falls back to the stage default without its effort override, so a
-// stray 'sonnet' from an old config never reaches agent().
+// The rules match load_config in estimate.py. A model name maps to an alias
+// when exactly one family word appears in it as a whole word, so
+// 'us.anthropic.claude-opus-5-5' and 'Opus 5.5' are opus while 'claude-opusx'
+// and 'sonnet-opus' are not allowed. A model that is not allowed falls back to
+// the stage default without its effort, so a stray 'sonnet' from an old config
+// never reaches agent(). Off the Claude API the haiku alias resolves to
+// Haiku 4.5, which has no effort parameter, so an effort on haiku is dropped.
+// An effort that is not a known level is dropped too. Each drop is logged once
+// per stage.
 const ALLOWED_MODELS = ['opus', 'haiku']
+const FAMILIES = ['opus', 'haiku', 'sonnet', 'fable', 'mythos']
+const EFFORT_LEVELS = ['low', 'medium', 'high', 'xhigh', 'max']
 const normalizeModel = (value) => {
   if (typeof value !== 'string') return null
   const name = value.trim().toLowerCase()
-  return ALLOWED_MODELS.find((m) => name === m || name.startsWith('claude-' + m)) || name
+  const found = [...new Set((name.match(/[a-z]+/g) || []).filter((w) => FAMILIES.includes(w)))]
+  return found.length === 1 && ALLOWED_MODELS.includes(found[0]) ? found[0] : name
+}
+const normalizeEffort = (value) => {
+  if (typeof value !== 'string') return null
+  const level = value.trim().toLowerCase()
+  return EFFORT_LEVELS.includes(level) ? level : null
 }
 const warned = new Set()
+const warnOnce = (key, message) => {
+  if (warned.has(key)) return
+  warned.add(key)
+  log(message)
+}
 const stageOpts = (stage, label, phase, schema) => {
   const fallback = stage === 'worker' ? 'haiku' : 'opus'
   const raw = models && models[stage]
@@ -43,12 +60,20 @@ const stageOpts = (stage, label, phase, schema) => {
   const asked = normalizeModel(cfg.model)
   const allowed = ALLOWED_MODELS.includes(asked)
   const model = allowed ? asked : fallback
-  if (!allowed && cfg.model !== undefined && !warned.has(stage)) {
-    warned.add(stage)
-    log(`${stage}: model ${JSON.stringify(cfg.model)} is not allowed, running ${fallback}`)
+  if (!allowed && cfg.model !== undefined) {
+    warnOnce(`${stage}:model`, `${stage}: model ${JSON.stringify(cfg.model)} is not allowed, running ${fallback}`)
   }
   const opts = { label, phase, schema, model }
-  if (allowed && cfg.effort && model !== 'haiku') opts.effort = cfg.effort
+  if (cfg.effort !== undefined && cfg.effort !== null) {
+    const shown = JSON.stringify(cfg.effort)
+    const level = normalizeEffort(cfg.effort)
+    let dropped = null
+    if (!allowed) dropped = cfg.model === undefined ? 'no model was named' : 'it came with a model that is not allowed'
+    else if (level === null) dropped = `it is not one of ${EFFORT_LEVELS.join(', ')}`
+    else if (model === 'haiku') dropped = 'haiku takes no effort override'
+    if (dropped) warnOnce(`${stage}:effort`, `${stage}: effort ${shown} dropped, ${dropped}`)
+    else opts.effort = level
+  }
   return opts
 }
 
