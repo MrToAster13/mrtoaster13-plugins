@@ -402,3 +402,100 @@ def test_every_agent_call_in_a_whole_run_names_an_allowed_model(
         by_phase.setdefault(call["opts"]["phase"], set()).add(call["opts"]["model"])
     assert by_phase == {"Write": {worker}, "Verify": {verifier}}
     assert result["result"]["verified"] == 2
+
+
+# Runs the whole of batch.js with stub agent, pipeline and log, and keeps
+# every prompt agent() receives plus the return value. Every verdict passes.
+PROMPT_RUNNER = r"""
+const fs = require('fs')
+const src = '"use strict";\n' +
+  fs.readFileSync(process.argv[1], 'utf8').replace('export const meta', 'const meta')
+const input = JSON.parse(fs.readFileSync(0, 'utf8'))
+const AsyncFunction = (async () => {}).constructor
+const prompts = []
+const agent = async (prompt, opts) => {
+  prompts.push(prompt)
+  return opts.phase === 'Verify' ? { ok: true, reason: 'holds up' }
+    : { artifact: 'out.txt', summary: 'done' }
+}
+const pipeline = async (items, fn) => Promise.all(items.map(fn))
+const run = new AsyncFunction('args', 'agent', 'pipeline', 'log', src)
+run(input, agent, pipeline, () => {}).then(
+  (result) => console.log(JSON.stringify({ prompts, result })),
+  (error) => { console.error(String(error && error.stack || error)); process.exit(1) })
+"""
+
+SH = shutil.which("sh")
+
+# Each of these broke out of the old double quotes or changed the value.
+HOSTILE_IDS = [
+    "x$(echo PWNED)y", "price-$5", 'a"b', "it's", "back`echo PWNED`tick",
+    "semi;colon && amp", "two  spaces", "back\\slash", "new\nline", "$HOME",
+    "*", "!bang", "'", "''", "-",
+]
+HOSTILE_STATE = "C:\\Program Files\\it's $(echo PWNED)\\state.py"
+HOSTILE_DIR = 'check "point" `echo PWNED` $HOME'
+
+
+def rendered_prompts(units, state_path, checkpoint_dir):
+    payload = {"units": units, "worker": "w", "verifier": "v",
+               "statePath": state_path, "checkpointDir": checkpoint_dir}
+    out = subprocess.run([NODE, "-e", PROMPT_RUNNER, str(BATCH_JS)],
+                         input=json.dumps(payload).encode(), timeout=60,
+                         stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    assert out.returncode == 0, out.stderr.decode()
+    return json.loads(out.stdout.decode())
+
+
+def shell_words(command):
+    """Run a command line through sh with `python` stubbed to print its argv,
+    and return the words the real python would have received."""
+    script = "python() { printf '%s\\0' \"$@\"; }\n" + command + "\n"
+    out = subprocess.run([SH], input=script.encode("utf-8"), timeout=60,
+                         stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    assert out.returncode == 0, (command, out.stderr.decode())
+    return out.stdout.decode("utf-8").split("\0")[:-1]
+
+
+# What an agent might put in the placeholders: backticks and a dollar sign,
+# which double quotes would run or expand, and no single quote.
+AGENT_REASON = "the `price` field reads $5, expected $(total)"
+AGENT_PATH = "out/$UNIT `id`.md"
+
+
+def record_commands(prompt):
+    import re
+    found = re.findall(r"^    (python .*?)(?=\n\n|\Z)", prompt, re.M | re.S)
+    # The agent fills these placeholders in; sh would read < and | as syntax.
+    return [c.replace("<verified|failed>", "verified")
+             .replace("<one line>", AGENT_REASON)
+             .replace("<path you wrote>", AGENT_PATH) for c in found]
+
+
+@pytest.mark.skipif(SH is None, reason="sh is not on PATH")
+def test_record_commands_pass_hostile_values_through_sh_unchanged():
+    units = [{"id": unit_id} for unit_id in HOSTILE_IDS]
+    run = rendered_prompts(units, HOSTILE_STATE, HOSTILE_DIR)
+    assert len(run["prompts"]) == 2 * len(units)
+    seen = []
+    for prompt in run["prompts"]:
+        commands = record_commands(prompt)
+        assert len(commands) == 1, prompt
+        words = shell_words(commands[0])
+        assert words[0] == HOSTILE_STATE, words
+        assert words[1] == "record", words
+        assert words[words.index("--dir") + 1] == HOSTILE_DIR, words
+        seen.append(words[words.index("--id") + 1])
+        if "--artifact" in words:
+            assert words[words.index("--artifact") + 1] == AGENT_PATH, words
+        else:
+            assert words[words.index("--reason") + 1] == AGENT_REASON, words
+    assert sorted(seen) == sorted(HOSTILE_IDS * 2)
+
+
+@pytest.mark.skipif(SH is None, reason="sh is not on PATH")
+def test_the_authority_command_passes_hostile_paths_through_sh_unchanged():
+    run = rendered_prompts([{"id": "a"}], HOSTILE_STATE, HOSTILE_DIR)
+    command = run["result"]["authority"].replace("<units.json>", "units.json")
+    words = shell_words(command)
+    assert words == [HOSTILE_STATE, "report", "--units", "units.json", "--dir", HOSTILE_DIR]

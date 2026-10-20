@@ -282,6 +282,8 @@ def claim(checkpoint_dir, unit_id, lease_seconds=DEFAULT_LEASE_SECONDS, owner=No
 
 
 def release(checkpoint_dir, unit_id):
+    """Drop a unit's lease. Returns True if this call removed the lock file,
+    and False if there was no lock file or it could not be removed."""
     try:
         os.unlink(str(lock_path(checkpoint_dir, unit_id)))
         return True
@@ -349,9 +351,15 @@ def _main(argv=None):
         print("claimed" if won else "held-by-another")
         return 0 if won else 1
     if args.command == "release":
-        release(args.dir, args.id)
-        print("released")
-        return 0
+        if release(args.dir, args.id):
+            print("released")
+            return 0
+        # Exit 4: not 1 (held), 2 (argparse's usage error) or 3 (claim's
+        # cannot-create). The lease may have been stolen, or the lock is
+        # still there and blocks every other claimant until it goes stale.
+        print("cannot release {}: no lock file there, or it could not be removed".format(
+            lock_path(args.dir, args.id)), file=sys.stderr)
+        return 4
     return 2
 
 

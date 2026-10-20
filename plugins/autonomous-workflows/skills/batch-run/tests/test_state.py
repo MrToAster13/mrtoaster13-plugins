@@ -411,6 +411,38 @@ def test_cli_rejects_negative_limits_and_leases(batch, argv):
     assert b"must be 0 or more" in result.stderr
 
 
+def test_the_release_cli_drops_a_held_lock(batch):
+    _, _, cdir = batch
+    assert state.claim(cdir, "unit-14") is True
+    result = run_cli("release", "--dir", str(cdir), "--id", "unit-14")
+    assert result.returncode == 0
+    assert result.stdout.decode().strip() == "released"
+    assert not state.lock_path(cdir, "unit-14").exists()
+
+
+def test_the_release_cli_exits_4_when_there_is_no_lock(batch):
+    _, _, cdir = batch
+    cdir.mkdir(parents=True, exist_ok=True)
+    assert state.release(cdir, "unit-15") is False
+    result = run_cli("release", "--dir", str(cdir), "--id", "unit-15")
+    assert result.returncode == 4
+    assert b"released" not in result.stdout
+    assert b"cannot release" in result.stderr
+
+
+def test_the_release_cli_exits_4_when_the_lock_cannot_be_removed(batch):
+    _, _, cdir = batch
+    # A directory where the lock file should be: unlink fails on every OS.
+    path = state.lock_path(cdir, "unit-16")
+    path.mkdir(parents=True)
+    assert state.release(cdir, "unit-16") is False
+    result = run_cli("release", "--dir", str(cdir), "--id", "unit-16")
+    assert result.returncode == 4
+    assert b"released" not in result.stdout
+    assert b"cannot release" in result.stderr
+    assert path.is_dir()
+
+
 def test_cli_record_then_report_strict(batch):
     units, units_file, cdir = batch
     for unit in units:
