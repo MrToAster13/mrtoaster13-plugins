@@ -15,18 +15,18 @@ resumes from here and redoes nothing.
 
 - Started: <YYYY-MM-DD HH:MM:SS>
 - Repo: <path> @ <remote>
-- Linear project: <name> (<id>)
+- Ticket project: <name>
 - Parent issue: <KEY-nnn>
 - PRD: <KEY-nnn>
 - Stack: <language>, <package manager>, test `<cmd>`, typecheck `<cmd>`, lint `<cmd>`
 - Lanes: <lane>, <lane>
 - Integration branch: factory/<feature-slug>
-- Parked marker: <the existing Linear state agreed in Phase 0, or "ledger only">
+- Parked marker: <the existing ticket status agreed in Phase 0, or "ledger only">
 - Totals: builders <n>, subagents <n>, live now <n>/10, queued <n>
 
 ## Tickets
 
-| # | Linear | Title | Lane | Blocked by | Status | Branch | PR |
+| # | Ticket | Title | Lane | Blocked by | Status | Branch | PR |
 |---|--------|-------|------|-----------|--------|--------|-----|
 | 1 | ABC-41 | Seed schema | data | none | Done | factory/abc-41-seed-schema | #12 |
 | 2 | ABC-42 | List view | ui | 1 | In progress | factory/abc-42-list-view | #13 |
@@ -99,7 +99,7 @@ wrong costs an hour, decide. If picking wrong costs a day or costs the user's
 trust, park.
 
 Parking a ticket stops **that ticket only**. Everything not downstream of it keeps
-running. The ticket keeps whatever Linear state it is in, and gets the parked
+running. The ticket keeps whatever status it has, and gets the parked
 comment from [closing.md](./closing.md) so the reason is visible outside this
 session. Use a different state only if Phase 0 agreed on an existing one. Never
 create a state or label for it.

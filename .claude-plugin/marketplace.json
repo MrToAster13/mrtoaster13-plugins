@@ -30,7 +30,7 @@
         "orchestrator",
         "subagents",
         "adversarial-review",
-        "linear",
+        "tickets",
         "remediation",
         "multi-repo",
         "provenance",
