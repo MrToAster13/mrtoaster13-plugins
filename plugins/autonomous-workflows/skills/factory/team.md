@@ -115,7 +115,7 @@ Brief:
 
 ## factory-integrator
 
-Tools: git, gh, Linear, read. No source editing except conflict resolution.
+Tools: git, gh, ticket.py, read. No source editing except conflict resolution.
 
 Brief:
 
@@ -147,7 +147,7 @@ Brief:
 > <sha>`) so the line is green again, park the ticket with the conflict written up
 > as the question, and report. Do not paper over it with a quick fix.
 >
-> After each merge: post the approved Linear comment, flip the issue to Done,
+> After each merge: post the approved ticket comment, flip the ticket to Done,
 > promote newly unblocked tickets from Backlog to Todo, and report your ledger
 > lines upward. You do not write the ledger file. The orchestrator does.
 

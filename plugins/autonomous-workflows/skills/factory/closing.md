@@ -1,14 +1,17 @@
 # Closing the loop
 
-Two audiences. GitHub gets the mechanics of the change. Linear gets the narrative
+Two audiences. GitHub gets the mechanics of the change. The ticket gets the narrative
 of the work. Neither gets a copy of the other.
 
 ## PR body template
 
 Opened as a draft by the builder against the run's integration branch, marked
 ready by the integrator. Because the base is not the default branch, `Closes`
-will not auto close the Linear issue: the integrator closes it explicitly after
-the merge. Keep the reference anyway, it is what links the PR to the ticket.
+will not auto close the ticket: the integrator closes it explicitly after the
+merge with `ticket.py status <KEY>-<n> Done`. Keep the reference anyway, it is
+what links the PR to the ticket, and add the PR to the ticket with
+`ticket.py set <KEY>-<n> prs <every existing PR> <url>`. `set` replaces the
+whole list, so pass the PRs already on the ticket too.
 
 ```markdown
 ## What this delivers
@@ -50,7 +53,7 @@ Closes <KEY>-<n>
 Commit messages: present tense, one logical change each, ending with the
 attribution line the session's harness specifies.
 
-## Linear comment template
+## Ticket comment template
 
 **Approved once in Phase 0, then used unedited for the whole run.** Agents fill
 it in and post without further approval. Anything that does not fit this shape
@@ -68,7 +71,7 @@ gets drafted for the user in the normal way.
 Unblocks: <KEY-nnn, KEY-nnn, or "nothing">
 ```
 
-For a parked ticket, the same comment slot gets this instead, and the issue stays
+For a parked ticket, the same comment slot gets this instead, and the ticket stays
 in its current state rather than moving to Done:
 
 ```markdown

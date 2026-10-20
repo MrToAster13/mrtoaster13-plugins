@@ -1,6 +1,6 @@
 ---
 name: factory
-description: Autonomous ticket loop. Turns an approved spec into a working MVP by creating tickets, building each one through a team of specialist agents in isolated worktrees, adversarially reviewing every diff, and closing the loop in Linear and GitHub. Parks blockers instead of stopping, and interrupts you once with every open question at the same time. Use for "run the factory", "build this out autonomously", "take these tickets and ship them".
+description: Autonomous ticket loop. Turns an approved spec into a working MVP by creating tickets, building each one through a team of specialist agents in isolated worktrees, adversarially reviewing every diff, and closing the loop in the vault tickets and GitHub. Parks blockers instead of stopping, and interrupts you once with every open question at the same time. Use for "run the factory", "build this out autonomously", "take these tickets and ship them".
 disable-model-invocation: true
 ---
 
@@ -9,7 +9,7 @@ disable-model-invocation: true
 You are the **orchestrator**. You talk to the user. You do not write code.
 
 Everything else runs in subagents whose context dies with them. Your own context
-holds the ledger, the Linear state, and one line summaries. That is the whole
+holds the ledger, the ticket state, and one line summaries. That is the whole
 point: the session survives a twenty ticket build without compaction.
 
 Run this **after** a grilling. It expects a sharpened idea. If the idea is still
@@ -24,11 +24,12 @@ then surface every parked question in one message. One interruption, not eleven.
 
 Every agent this skill spawns gets both of these pasted into its prompt:
 
-1. **The PRD** published to Linear by `/to-spec`. Fetch the body and pass it
-   inline. Do not pass a URL and hope the agent fetches it.
+1. **The PRD** published as a ticket by `/to-spec`. Fetch the body with
+   `ticket.py show <KEY>-<n>` and pass it inline. Do not pass a URL and hope the
+   agent fetches it.
 2. **`CONTEXT.md` and `docs/adr/`**, the domain glossary and the architecture
    decisions. Agents use this vocabulary in code, tests, commits, PR bodies, and
-   Linear comments.
+   ticket comments.
 
 An agent handed neither has been briefed wrong. Spawn it again.
 
@@ -36,7 +37,7 @@ An agent handed neither has been briefed wrong. Spawn it again.
 
 ## Phase 0: Bind
 
-A wrong binding writes to the wrong Linear project and is expensive to unpick.
+A wrong binding writes to the wrong ticket project and is expensive to unpick.
 
 1. **Repo.** `git rev-parse --show-toplevel`, `git remote -v`, current branch,
    `git status --short`. A dirty tree stops the run: ask the user to commit or
@@ -46,13 +47,18 @@ A wrong binding writes to the wrong Linear project and is expensive to unpick.
    to the default branch itself.
 3. **Tracker config.** Read `docs/agents/issue-tracker.md` and
    `docs/agents/domain.md`. Missing? Run `/setup-matt-pocock-skills` first.
-4. **Linear.** Resolve the project from the user's repo to project mapping,
-   wherever their setup keeps it. If there is no mapping, or the repo is not in
-   it, ask which project. Never invent one. Confirm the parent or spec issue by
-   ID out loud before writing anything. List the team's existing states and
-   labels, and agree with the user which existing one marks a parked ticket.
-   If none fits, a park lives in the ledger and in a comment on the issue.
-   Never create a state or label to cover the gap.
+4. **Tickets.** Tickets are notes under `Tickets/` in the user's Obsidian vault.
+   Every ticket read and write goes through `Tickets/_tools/ticket.py` in that
+   vault (called `ticket.py` below). Never edit a ticket note by hand. Each write
+   pulls, commits and pushes the vault. Exit code 3 means a git conflict: stop the
+   write and report it, never resolve it by hand. Resolve the project from the
+   user's repo to project mapping, wherever their setup keeps it. If there is no
+   mapping, or the repo is not in it, ask which project. Never invent one. Confirm
+   the parent or spec ticket by ID out loud (`ticket.py show <KEY>-<n>`) before
+   writing anything. Read the existing statuses and labels from
+   `Tickets/_tools/structure.json`, and agree with the user which existing status
+   marks a parked ticket. If none fits, a park lives in the ledger and in a comment
+   on the ticket. Never create a status or label to cover the gap.
 5. **GitHub.** Confirm `gh auth status` and that the remote exists. With no
    remote, say so plainly and run in local commit mode rather than inventing a PR
    flow.
@@ -66,7 +72,7 @@ A wrong binding writes to the wrong Linear project and is expensive to unpick.
    [ledger.md](./ledger.md). Pass that path verbatim to every agent. **Only the
    orchestrator writes it.** Others report their lines upward, so no checkpoint
    ever lives in a worktree that gets deleted.
-8. **Approve the Linear comment template.** Show the user the template from
+8. **Approve the ticket comment template.** Show the user the template from
    [closing.md](./closing.md) once. On approval, agents post filled copies for the
    rest of the run without asking again. If the user keeps a draft first rule
    for tracker writes, this is the only standing exception to it. It covers this
@@ -84,9 +90,12 @@ repo yourself. After it, you never touch source again.
 The user approves the ticket breakdown here. It is their second and last
 scheduled interruption before the build runs.
 
-Publish to Linear in dependency order with native blocking links and the
-`ready-for-agent` label. Copy every ticket into the ledger with its Linear ID,
-its blockers, and a lane.
+Publish the tickets to the vault in dependency order. For each ticket run
+`ticket.py new --title "<title>" --project "<project>" --parent <KEY>-<n>
+--body-file <file>`, then `ticket.py relate <KEY>-<n> blocked_by <KEY>-<m>` for
+each blocker. Add `--label ready-for-agent` only if `Tickets/_tools/structure.json`
+lists that label. Never pass `--new-structure`. Copy every ticket into the ledger
+with its ticket ID, its blockers, and a lane.
 
 ## Phase 2: Hire the team
 
@@ -191,7 +200,7 @@ flat number would halt a twenty ticket build partway through for no reason.
 
 **Each builder, inside its own worktree:**
 
-1. Branch `factory/<linear-id>-<slug>` off the integration branch.
+1. Branch `factory/<ticket-id>-<slug>` off the integration branch.
 2. Build through `/tdd` at the seams the PRD names. One red green slice at a time.
 3. Spawn one off subagents for self contained work, up to the allowance its brief
    states, never more: reading an unfamiliar library, generating fixtures,
@@ -226,9 +235,12 @@ are the integrator's job. If a merge turns the suite red though both sides were
 green alone, it reverts the merge commit immediately (`git revert -m 1 <sha>`),
 parks the ticket, and reports.
 
-**Then close out.** Post the approved Linear comment, flip the issue to Done, and
+**Then close out.** Post the approved ticket comment (`ticket.py comment <KEY>-<n>
+--body-file <file>`), flip the ticket to Done (`ticket.py status <KEY>-<n> Done`),
+and
 promote newly unblocked tickets from Backlog to Todo. Status changes need no
-approval.
+approval, unless the user's own rules ask for a draft before changing tickets
+the run does not own.
 
 **Checkpoint after every single ticket.** Write the ledger before you report
 anything. A session that dies mid run must resume without redoing finished work.
@@ -260,7 +272,7 @@ Never surface a question you could have decided. The parking rules are in
 4. **Open one pull request from the integration branch to the default branch**,
    with the full ticket list and test counts in the body, and leave it for the
    user. Merging it is their call, not yours.
-5. Post the closing comment on the Linear parent issue and move it to Done.
+5. Post the closing comment on the parent ticket and move it to Done.
 6. Write the HTML report to `%TEMP%`, open it, and give the absolute path.
 7. In chat, give the verdict only: tickets shipped, tickets parked, test counts,
    what the user has to decide. The report carries the detail.
@@ -268,7 +280,8 @@ Never surface a question you could have decided. The parking rules are in
 ## Resume
 
 `/factory resume` reads `%TEMP%\factory\<slug>\factory.md`, rebuilds the frontier
-from the ledger and live Linear state, and re enters Phase 3. It redoes nothing
+from the ledger and live ticket state (`ticket.py list --project "<project>"
+--json --pull`), and re enters Phase 3. It redoes nothing
 the ledger records as Done.
 
 ## Rules that never bend
@@ -277,9 +290,9 @@ the ledger records as Done.
   runs tests. The moment you do the work yourself, the context budget is gone.
 - Nothing reaches the default branch without a pull request the user merges.
 - No ticket merges without an adversary pass on its diff.
-- No Linear write outside the approved template without showing a draft. Never
-  create a Linear state, label, project, or team.
-- No secrets, keys, or log evidence in any commit, PR body, or Linear comment.
+- No ticket write outside the approved template without showing a draft. Never
+  create a status, label, project, or team.
+- No secrets, keys, or log evidence in any commit, PR body, or ticket comment.
   Scan before every push, with a real command.
 - Report failures as failures, with the output. A parked ticket is not a shipped
   ticket and never gets counted as one.

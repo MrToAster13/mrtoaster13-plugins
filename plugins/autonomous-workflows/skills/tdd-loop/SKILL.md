@@ -22,7 +22,8 @@ Stack commands come from the repo's own config: `package.json` scripts, `pyproje
 2. **Stack.** Node if `package.json`; Python if any of `pyproject.toml`, `setup.py`, `setup.cfg`, `requirements*.txt`, `Pipfile`, `tox.ini`. Both can be true. Neither → ask.
 3. **Baseline.** Run the full suite before touching anything. Record pass/fail counts. Already-failing tests are pre-existing and excluded from every later gate, so say which ones.
 4. **Feature.** If the user supplied a spec, use it. Otherwise scan for candidates and present them for a pick:
-   - open issues in the tracker this repo maps to, if the user keeps one (Linear, GitHub issues)
+   - open issues in the tracker this repo maps to, if the user keeps one (vault tickets, listed
+   with `ticket.py list --project "<project>"`, or GitHub issues)
    - `TODO.md`, `BACKLOG.md`, `ROADMAP.md`, or a `## TODO` section in the README
    - tests marked skip/xfail/`it.todo`
    Never guess which feature is "next". Present, wait, then proceed.
