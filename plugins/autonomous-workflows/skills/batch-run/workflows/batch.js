@@ -129,10 +129,23 @@ const fill = (template, unit) =>
     template,
   )
 
+// Quote a value as one word for a POSIX shell such as bash. Inside single
+// quotes nothing expands, so an id like x$(cmd)y or price-$5 reaches state.py
+// as written. A single quote in the value closes the quote, adds an escaped
+// quote and reopens it.
+const shq = (value) => `'${String(value).split("'").join("'\\''")}'`
+
+// The placeholders are single-quoted too, so a reason with backticks or a
+// dollar sign in it is not run or expanded.
+const QUOTING_NOTE =
+  `The values are quoted for a POSIX shell such as bash. Keep the single quotes ` +
+  `around what you fill in, and write a single quote inside one as '\\''.`
+
 const checkpoint = (id, status, extra) =>
   `\n\nWhen you are done, record your result by running exactly this from the ` +
   `directory holding the checkpoint dir:\n\n` +
-  `    python "${statePath}" record --dir "${checkpointDir}" --id "${id}" --status ${status}${extra}\n\n` +
+  `    python ${shq(statePath)} record --dir ${shq(checkpointDir)} --id ${shq(id)} --status ${status}${extra}\n\n` +
+  `${QUOTING_NOTE} ` +
   `Run it even if you are unsure. An unrecorded unit is retried from scratch on the next run.`
 
 const workerPrompt = (unit, attempt, lastVerdict) =>
@@ -140,7 +153,7 @@ const workerPrompt = (unit, attempt, lastVerdict) =>
   (attempt > 1
     ? `\n\nThis is attempt ${attempt}. The previous attempt was rejected: ${lastVerdict.reason}\nFix that specifically.`
     : '') +
-  checkpoint(unit.id, 'written', ' --artifact "<path you wrote>"')
+  checkpoint(unit.id, 'written', " --artifact '<path you wrote>'")
 
 const verifierPrompt = (unit, art) =>
   fill(verifier, unit) +
@@ -150,7 +163,8 @@ const verifierPrompt = (unit, art) =>
   `fail, because a false pass is the one nobody looks at again.` +
   `\n\nThen record the outcome: use --status verified with ok=true, or --status failed with a --reason ` +
   `naming the specific defect.\n\n` +
-  `    python "${statePath}" record --dir "${checkpointDir}" --id "${unit.id}" --status <verified|failed> --reason "<one line>"`
+  `    python ${shq(statePath)} record --dir ${shq(checkpointDir)} --id ${shq(unit.id)} --status <verified|failed> --reason '<one line>'\n\n` +
+  QUOTING_NOTE
 
 const runUnit = async (unit) => {
   let last = { reason: 'no attempt completed' }
@@ -197,5 +211,5 @@ return {
   missing,
   // The workflow's return value is a convenience. The checkpoint dir on disk is
   // the authority, and `state.py report` is what should be trusted afterward.
-  authority: `python ${statePath} report --units <units.json> --dir ${checkpointDir}`,
+  authority: `python ${shq(statePath)} report --units <units.json> --dir ${shq(checkpointDir)}`,
 }

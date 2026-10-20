@@ -232,7 +232,11 @@ it through.
   `--lease-seconds`, and exits 3 when it cannot create the lock file. Any other
   error prints a Python traceback and also exits 1, so check for
   `held-by-another` on stdout rather than the exit code alone. A stale lock
-  the caller cannot delete reads as held on every call.
+  the caller cannot delete reads as held on every call. `release` exits 0 and
+  prints `released` when it removes the lock file. It exits 4 with a message
+  on stderr when there is no lock file, which can mean another run stole a
+  stale lease, or when the lock cannot be removed, which leaves the unit
+  locked until the lease goes stale.
 - **Deleting a record file is the supported way to force a redo** of one unit.
 
 ## Layout
