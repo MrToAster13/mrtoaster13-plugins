@@ -1,11 +1,13 @@
-"""Tests for the model and effort rules in workflows/batch.js.
+"""Tests for the model guard in workflows/batch.js.
 
 batch.js is a workflow script with a top-level return, so it cannot be
-imported. These tests cut the block from `const ALLOWED_MODELS` to
-`if (!units.length)` out of the file, run it under node with stub `models`
-and `log`, and read back what stageOpts would pass to agent(). One test runs
-the whole script with stub `agent`, `pipeline` and `log` and checks every
-call. They skip when node is not on PATH.
+imported. These tests run the whole script under node in strict mode with stub
+`agent`, `pipeline` and `log`. estimate.py load-config owns the model and
+effort rules; batch.js runs the stages it is handed and, before a single agent
+starts, refuses any model but opus or haiku, any effort on haiku and any effort
+that is not plain lowercase letters. One test feeds the output of
+`estimate.py load-config --or-default` straight into a run, which is the
+contract the skill relies on. They skip when node is not on PATH.
 """
 
 from __future__ import annotations
@@ -26,32 +28,6 @@ BATCH_JS = Path(__file__).resolve().parents[1] / "workflows" / "batch.js"
 NODE = shutil.which("node")
 
 pytestmark = pytest.mark.skipif(NODE is None, reason="node is not on PATH")
-
-RUNNER = r"""
-const fs = require('fs')
-const src = fs.readFileSync(process.argv[1], 'utf8')
-const start = src.indexOf('const ALLOWED_MODELS')
-const end = src.indexOf('if (!units.length)')
-if (start < 0 || end < start) throw new Error('stageOpts block not found')
-const chunk = src.slice(start, end)
-const models = JSON.parse(fs.readFileSync(0, 'utf8'))
-const logs = []
-const run = new Function('models', 'log', chunk +
-  '\nreturn [stageOpts("worker", "w", "p", {}), stageOpts("worker", "w", "p", {}),' +
-  ' stageOpts("verifier", "v", "p", {})]')
-const [worker, again, verifier] = run(models, (m) => logs.push(m))
-const pick = (o) => ({ model: o.model, effort: o.effort === undefined ? null : o.effort })
-console.log(JSON.stringify({ worker: pick(worker), again: pick(again), verifier: pick(verifier), logs }))
-"""
-
-
-def stage_opts(models, timeout=60):
-    # models goes in on stdin, so its size is not capped by the command line.
-    out = subprocess.run([NODE, "-e", RUNNER, str(BATCH_JS)],
-                         input=json.dumps(models).encode(), timeout=timeout,
-                         stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True)
-    return json.loads(out.stdout.decode())
-
 
 # Runs the whole of batch.js in strict mode, as the workflow runtime would,
 # with stub agent, pipeline and log. Every verdict but the last attempt's
@@ -89,150 +65,147 @@ run(input, agent, pipeline, (m) => logs.push(m)).then(
 """
 
 
-def run_whole_workflow(models, max_attempts):
+MISSING = object()
+
+
+def _run(models, max_attempts):
     payload = {"units": [{"id": "a"}, {"id": "b"}], "worker": "w {id}", "verifier": "v {id}",
-               "models": models, "maxAttempts": max_attempts}
-    out = subprocess.run([NODE, "-e", WHOLE_RUNNER, str(BATCH_JS)],
-                         input=json.dumps(payload).encode(), timeout=60,
-                         stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+               "maxAttempts": max_attempts}
+    if models is not MISSING:
+        payload["models"] = models
+    return subprocess.run([NODE, "-e", WHOLE_RUNNER, str(BATCH_JS)],
+                          input=json.dumps(payload).encode(), timeout=60,
+                          stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+
+
+def run_whole_workflow(models, max_attempts=2):
+    out = _run(models, max_attempts)
     assert out.returncode == 0, out.stderr.decode()
     return json.loads(out.stdout.decode())
 
 
-@pytest.mark.parametrize("raw, model", [
-    ("Opus 5.5", "opus"),
-    ("opus[1m]", "opus"),
-    ("us.anthropic.claude-opus-5-5", "opus"),
-    ("anthropic.claude-haiku-5-5-v1:0", "haiku"),
-    ("claude-opusx", "opus"),   # not allowed, so the verifier default
-    ("sonnet-opus", "opus"),
-    ("claude-sonnet-5-5", "opus"),
-])
-def test_model_names_match_on_whole_words(raw, model):
-    result = stage_opts({"worker": {"model": "haiku"}, "verifier": {"model": raw}})
-    assert result["verifier"]["model"] == model
+def refused_run(models):
+    """Run batch.js with models it must refuse, and return the error text.
+
+    WHOLE_RUNNER prints only after the run returns, so an empty stdout and a
+    nonzero exit mean the script threw. The thrown error is checked to be the
+    guard's, which runs before the first agent() call.
+    """
+    out = _run(models, 2)
+    assert out.returncode != 0, out.stdout.decode()
+    assert out.stdout.decode() == ""
+    return out.stderr.decode()
 
 
-def test_a_near_miss_is_logged_once_and_falls_back():
-    result = stage_opts({"worker": {"model": "claude-opusx"}, "verifier": {"model": "opus"}})
-    assert result["worker"]["model"] == "haiku"
-    assert result["logs"] == ['worker: model "claude-opusx" is not allowed, running haiku']
+DEFAULTS = {"worker": {"model": "haiku"}, "verifier": {"model": "opus"}}
 
 
-def test_an_effort_on_haiku_is_dropped_and_logged():
-    result = stage_opts({"worker": {"model": "haiku", "effort": "high"}})
-    assert result["worker"] == {"model": "haiku", "effort": None}
-    assert result["logs"] == ['worker: effort "high" dropped, haiku takes no effort override']
+@pytest.mark.parametrize("models", [
+    MISSING,
+    None,
+    [],
+    "opus",
+    {},
+    {"worker": {"model": "haiku"}},
+    {"worker": "haiku", "verifier": "opus"},
+    {"worker": {"model": "sonnet"}, "verifier": {"model": "opus"}},
+    {"worker": {"model": "haiku"}, "verifier": {"model": "claude-opus-5-5"}},
+    {"worker": {"model": "haiku"}, "verifier": {"model": "Opus"}},
+    {"worker": {"model": "haiku"}, "verifier": {"model": " opus"}},
+    {"worker": {"model": None}, "verifier": {"model": "opus"}},
+    {"worker": {}, "verifier": {"model": "opus"}},
+    {"worker": {"model": "haiku"}, "verifier": {"model": "opus", "effort": 3}},
+    {"worker": {"model": "haiku"}, "verifier": {"model": "opus", "effort": ["low"]}},
+    {"worker": {"model": "haiku"}, "verifier": {"model": "opus", "effort": ""}},
+    {"worker": {"model": "haiku"}, "verifier": {"model": "opus", "effort": "  "}},
+    {"worker": {"model": "haiku"}, "verifier": {"model": "opus", "effort": "HIGH"}},
+    {"worker": {"model": "haiku"}, "verifier": {"model": "opus", "effort": " high"}},
+    {"worker": {"model": "haiku", "effort": "high"}, "verifier": {"model": "opus"}},
+], ids=["missing", "null", "array", "string", "empty", "no-verifier", "bare-strings",
+        "sonnet", "full-id", "capitalised", "padded", "null-model", "no-model",
+        "number-effort", "list-effort", "empty-effort", "blank-effort", "upper-effort",
+        "padded-effort", "haiku-effort"])
+def test_models_load_config_would_never_emit_are_refused_before_any_agent_runs(models):
+    error = refused_run(models)
+    assert "load-config --dir <checkpoint> --or-default" in error
 
 
-@pytest.mark.parametrize("effort, kept, log", [
-    ("low", "low", None),
-    ("MAX", "max", None),
-    ("turbo", None, 'verifier: effort "turbo" dropped, it is not one of low, medium, high, xhigh, max'),
-    (3, None, "verifier: effort 3 dropped, it is not one of low, medium, high, xhigh, max"),
-    ("", None, 'verifier: effort "" dropped, it is not one of low, medium, high, xhigh, max'),
-])
-def test_an_invalid_effort_is_dropped_and_logged(effort, kept, log):
-    result = stage_opts({"verifier": {"model": "opus", "effort": effort}})
-    assert result["verifier"] == {"model": "opus", "effort": kept}
-    assert result["logs"] == ([log] if log else [])
+def test_the_refusal_names_the_stage_and_the_value():
+    error = refused_run({"worker": {"model": "haiku"}, "verifier": {"model": "sonnet"}})
+    assert 'models.verifier.model is "sonnet", not one of opus, haiku' in error
+    error = refused_run({"worker": {"model": "haiku", "effort": "low"}, "verifier": DEFAULTS["verifier"]})
+    assert 'models.worker.effort is "low", but haiku takes no effort override' in error
 
 
-def test_an_effort_with_no_model_is_dropped_and_logged():
-    result = stage_opts({"verifier": {"effort": "low"}})
-    assert result["verifier"] == {"model": "opus", "effort": None}
-    assert result["logs"] == ['verifier: effort "low" dropped, no model was named']
+def test_the_start_log_names_each_stage_as_it_runs():
+    models = {"worker": {"model": "haiku"}, "verifier": {"model": "opus", "effort": "max"}}
+    logs = run_whole_workflow(models)["logs"]
+    assert "Writer: haiku. Verifier: opus (effort max)." in logs[0]
 
 
-def test_an_effort_on_a_rejected_model_goes_with_it():
-    result = stage_opts({"verifier": {"model": "sonnet", "effort": "low"}})
-    assert result["verifier"] == {"model": "opus", "effort": None}
-    assert result["logs"] == [
-        'verifier: model "sonnet" is not allowed, running opus',
-        'verifier: effort "low" dropped, it came with a model that is not allowed',
-    ]
+def test_no_pending_units_needs_no_models():
+    payload = {"units": [], "worker": "", "verifier": ""}
+    out = subprocess.run([NODE, "-e", WHOLE_RUNNER, str(BATCH_JS)],
+                         input=json.dumps(payload).encode(), timeout=60,
+                         stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    assert out.returncode == 0, out.stderr.decode()
+    assert json.loads(out.stdout.decode())["result"]["note"] == "no pending units"
 
 
-@pytest.mark.parametrize("models", [None, {}, {"worker": None}, "x", [], 0, False, "", 5])
-def test_missing_or_junk_models_run_the_defaults_silently(models):
-    result = stage_opts(models)
-    assert result["worker"] == {"model": "haiku", "effort": None}
-    assert result["verifier"] == {"model": "opus", "effort": None}
-    assert result["logs"] == []
+@pytest.mark.parametrize("models, worker, verifier", [
+    ({"worker": {"model": "opus", "effort": "low"}, "verifier": {"model": "opus", "effort": "max"}},
+     {"model": "opus", "effort": "low"}, {"model": "opus", "effort": "max"}),
+    ({"worker": {"model": "haiku", "effort": None}, "verifier": {"model": "opus"}},
+     {"model": "haiku", "effort": None}, {"model": "opus", "effort": None}),
+    # Not a level load-config keeps, but which levels are valid is
+    # estimate.py's rule, not batch.js's.
+    ({"worker": {"model": "opus", "effort": "banana"}, "verifier": {"model": "opus"}},
+     {"model": "opus", "effort": "banana"}, {"model": "opus", "effort": None}),
+    ({"choice": "custom", "remapped": ["x"], "worker": {"model": "opus", "extra": 1},
+      "verifier": {"model": "haiku"}},
+     {"model": "opus", "effort": None}, {"model": "haiku", "effort": None}),
+], ids=["effort-passed", "null-effort", "unknown-level", "extra-keys"])
+def test_allowed_models_pass_through_unchanged(models, worker, verifier):
+    calls = run_whole_workflow(models)["calls"]
+    assert len(calls) == 2 * 2 * 2, calls
+    for call in calls:
+        expected = worker if call["opts"]["phase"] == "Write" else verifier
+        assert {"model": call["opts"]["model"], "effort": call["opts"]["effort"]} == expected
 
 
-def test_a_stage_written_as_a_bare_string_is_its_model():
-    result = stage_opts({"worker": "opus", "verifier": "Haiku"})
-    assert result["worker"] == {"model": "opus", "effort": None}
-    assert result["verifier"] == {"model": "haiku", "effort": None}
-    assert result["logs"] == []
+ESTIMATE = Path(__file__).resolve().parents[1] / "scripts" / "estimate.py"
 
 
-@pytest.mark.parametrize("value, shown", [(5, "5"), (["opus"], '["opus"]'), (True, "true")])
-def test_a_junk_stage_value_is_logged_once_and_falls_back(value, shown):
-    result = stage_opts({"worker": value, "verifier": {"model": "opus"}})
-    assert result["worker"] == {"model": "haiku", "effort": None}
-    assert result["logs"] == ["worker: {} is not a model setting, running haiku".format(shown)]
+def _load_config_cli(cdir):
+    out = subprocess.run([sys.executable, str(ESTIMATE), "load-config", "--dir", str(cdir),
+                          "--or-default"], stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                         timeout=60)
+    assert out.returncode == 0, out.stderr.decode()
+    return json.loads(out.stdout.decode())
 
 
-@pytest.mark.parametrize("raw", [
-    "opus", "Opus 5.5", "OPUS\n", "opus-haiku", "haiku haiku", "claude-opusx",
-    "\u043epus", "op\u200bus", "HAI\u212aU", "HA\u0130KU", "\ufeffhaiku",
-    "\rhaiku\r", "\x0bhaiku\x0c",
-])
-def test_model_names_resolve_the_same_in_python_and_javascript(raw):
-    expected = estimate.normalize_model(raw)
-    expected = expected if expected in estimate.PRICES else "opus"
-    assert stage_opts({"verifier": {"model": raw}})["verifier"]["model"] == expected
-
-
-@pytest.mark.parametrize("stage, raw, fallback", [
-    ("worker", "claude-opusx", "haiku"),
-    ("worker", "sonnet-opus", "haiku"),
-    ("worker", "opus-haiku", "haiku"),
-    ("worker", "Opus Sonnet", "haiku"),
-    ("verifier", "haiku-opus", "opus"),
-    ("verifier", "claude-haikux", "opus"),
-])
-def test_a_name_without_exactly_one_allowed_family_word_falls_back(stage, raw, fallback):
-    other = "verifier" if stage == "worker" else "worker"
-    result = stage_opts({stage: {"model": raw}, other: {"model": "opus"}})
-    assert result[stage]["model"] == fallback
-    assert result["logs"] == ["{}: model {} is not allowed, running {}".format(
-        stage, json.dumps(raw), fallback)]
-
-
-def test_a_null_model_with_an_effort_gives_the_reason_python_gives():
-    result = stage_opts({"worker": {"model": "haiku"},
-                         "verifier": {"model": None, "effort": "low"}})
-    assert result["verifier"] == {"model": "opus", "effort": None}
-    assert result["logs"] == ['verifier: effort "low" dropped, no model was named']
-
-
-def test_a_null_model_with_no_effort_runs_the_default_silently():
-    result = stage_opts({"worker": {"model": None}, "verifier": {"model": "opus"}})
-    assert result["worker"] == {"model": "haiku", "effort": None}
-    assert result["logs"] == []
-
-
-@pytest.mark.parametrize("raw", [
-    "opus" + " " * 1_000_000 + "x", " " * 1_000_000 + "haiku" + "\t" * 1_000_000,
-], ids=["inner-run", "outer-runs"])
-def test_a_long_run_of_spaces_trims_the_same_in_both_languages_and_fast(raw):
-    expected = estimate.normalize_model(raw)
-    expected = expected if expected in estimate.PRICES else "opus"
-    # A regex trim takes minutes on a million inner spaces; the loop takes
-    # milliseconds. The timeout fails the slow one.
-    assert stage_opts({"verifier": {"model": raw}}, timeout=20)["verifier"]["model"] == expected
-
-
-@pytest.mark.parametrize("raw", [
-    " high\t", "\ufeffhigh", "\x85high", "high\x1f", "\u00a0high", "HIGH",
-    "\rhigh", "high\r", "\x0bhigh\x0c",
-])
-def test_effort_levels_resolve_the_same_in_python_and_javascript(raw):
-    result = stage_opts({"verifier": {"model": "opus", "effort": raw}})
-    assert result["verifier"]["effort"] == estimate.normalize_effort(raw)
+@pytest.mark.parametrize("saved, worker, verifier", [
+    (None, "haiku", "opus"),
+    ({"choice": "opus-low-effort", "worker": {"model": "opus", "effort": "low"},
+      "verifier": {"model": "opus", "effort": "low"}}, "opus", "opus"),
+    # An old Sonnet checkpoint with an effort on Haiku: estimate.py remaps it,
+    # and batch.js runs what comes out.
+    ({"choice": "sonnet-both", "worker": {"model": "Haiku 5.5", "effort": "high"},
+      "verifier": {"model": "claude-sonnet-5-5"}}, "haiku", "opus"),
+], ids=["nothing-saved", "saved-choice", "old-sonnet"])
+def test_load_config_output_runs_as_is(tmp_path, saved, worker, verifier):
+    """The contract: whatever load-config --or-default prints, batch.js runs."""
+    cdir = tmp_path / "checkpoint"
+    if saved is not None:
+        cdir.mkdir()
+        (cdir / estimate.CONFIG_NAME).write_text(json.dumps(saved), encoding="utf-8")
+    config = _load_config_cli(cdir)
+    calls = run_whole_workflow(config)["calls"]
+    assert len(calls) == 2 * 2 * 2, calls
+    for call in calls:
+        stage = "worker" if call["opts"]["phase"] == "Write" else "verifier"
+        assert call["opts"]["model"] == {"worker": worker, "verifier": verifier}[stage]
+        assert call["opts"]["effort"] == config[stage].get("effort")
 
 
 def _call_args(source, start):
@@ -371,11 +344,11 @@ def test_the_blanker_names_an_unclosed_string_instead_of_crashing():
 
 
 @pytest.mark.parametrize("models, worker, verifier", [
-    (None, "haiku", "opus"),
-    ({"worker": {"model": "sonnet", "effort": "high"}, "verifier": "claude-sonnet-5-5"},
-     "haiku", "opus"),
-    ({"worker": "opus", "verifier": {"model": "Haiku", "effort": "low"}}, "opus", "haiku"),
-], ids=["defaults", "sonnet-everywhere", "swapped"])
+    (DEFAULTS, "haiku", "opus"),
+    ({"worker": {"model": "opus", "effort": "high"}, "verifier": {"model": "opus"}},
+     "opus", "opus"),
+    ({"worker": {"model": "opus"}, "verifier": {"model": "haiku"}}, "opus", "haiku"),
+], ids=["defaults", "opus-both", "swapped"])
 @pytest.mark.parametrize("max_attempts", [2, estimate.MAX_ATTEMPTS],
                          ids=["default-attempts", "max-attempts"])
 def test_every_agent_call_in_a_whole_run_names_an_allowed_model(
@@ -383,7 +356,7 @@ def test_every_agent_call_in_a_whole_run_names_an_allowed_model(
     """The static test reads the source; this one runs it.
 
     A call the static test cannot see, such as an escaped identifier or a
-    shadowed stageOpts, still has to pass an allowed model here. The run goes
+    shadowed stageOpts, still has to pass the stage's model here. The run goes
     to the highest attempt count estimate.py accepts, so a stageOpts swapped
     out only on a late retry is caught too.
     """
@@ -395,8 +368,6 @@ def test_every_agent_call_in_a_whole_run_names_an_allowed_model(
     for call in calls:
         assert call["count"] == 2 and call["opts"] is not None, call
         assert call["opts"]["model"] in ("opus", "haiku"), call
-        if call["opts"]["model"] == "haiku":
-            assert call["opts"]["effort"] is None, call
     by_phase = {}
     for call in calls:
         by_phase.setdefault(call["opts"]["phase"], set()).add(call["opts"]["model"])
@@ -438,7 +409,7 @@ HOSTILE_DIR = 'check "point" `echo PWNED` $HOME'
 
 
 def rendered_prompts(units, state_path, checkpoint_dir):
-    payload = {"units": units, "worker": "w", "verifier": "v",
+    payload = {"units": units, "worker": "w", "verifier": "v", "models": DEFAULTS,
                "statePath": state_path, "checkpointDir": checkpoint_dir}
     out = subprocess.run([NODE, "-e", PROMPT_RUNNER, str(BATCH_JS)],
                          input=json.dumps(payload).encode(), timeout=60,

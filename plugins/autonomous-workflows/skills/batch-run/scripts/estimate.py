@@ -13,7 +13,7 @@ CLI:
         [--ask-above 100000] [--worker-out 1500] [--verifier-out 400] [--text]
     python estimate.py save-config --dir checkpoint --units units.json --spec spec.md
         --choice haiku-write-opus-verify
-    python estimate.py load-config --dir checkpoint
+    python estimate.py load-config --dir checkpoint [--or-default]
 """
 
 from __future__ import annotations
@@ -62,8 +62,7 @@ EFFORT_LEVELS = ("low", "medium", "high", "xhigh", "max")
 # The keys a stage may carry. Anything else is dropped on load and reported.
 STAGE_KEYS = ("model", "effort")
 
-# Only ASCII whitespace is trimmed. batch.js trims the same set with its own
-# asciiTrim, so both read the same value the same way.
+# Only ASCII whitespace is trimmed, so a value reads the same on every platform.
 ASCII_SPACE = " \t\n\r\f\v"
 
 MENU = [
@@ -81,6 +80,9 @@ MENU = [
      "verifier": {"model": "opus", "effort": "low"},
      "note": "same price per token, fewer tokens by an amount this has not measured"},
 ]
+
+# The option a run uses when nobody chose one. Its stages match STAGE_DEFAULTS.
+DEFAULT_CHOICE = "haiku-write-opus-verify"
 
 DEFAULT_WORKER_OUT = 1500
 DEFAULT_VERIFIER_OUT = 400
@@ -293,8 +295,23 @@ def _menu_key(worker, verifier):
     return "custom"
 
 
-def load_config(checkpoint_dir):
+def default_config():
+    """The record for DEFAULT_CHOICE, as save_config would write it."""
+    option = next(o for o in MENU if o["key"] == DEFAULT_CHOICE)
+    return {"choice": option["key"], "worker": dict(option["worker"]),
+            "verifier": dict(option["verifier"])}
+
+
+def load_config(checkpoint_dir, or_default=False):
     """Return the models a prior run committed to, or None if there is no record.
+
+    This is the one place the model and effort rules live. batch.js runs the
+    stages it is handed and refuses any model but opus or haiku, any effort
+    on haiku and any effort that is not plain lowercase letters, but it does
+    not check which levels are valid, so its models should always come from
+    here. With or_default, a missing or unreadable
+    record returns default_config() instead of None. Nothing is written in
+    that case, so the next run still asks.
 
     load_config checks the record on every load and corrects what is wrong:
 
@@ -323,9 +340,9 @@ def load_config(checkpoint_dir):
         # reports the file in use.
         data = state._read_json(path)
     except (OSError, ValueError, RecursionError):
-        return None
+        return default_config() if or_default else None
     if not isinstance(data, dict) or "worker" not in data or "verifier" not in data:
-        return None
+        return default_config() if or_default else None
     tidied = "remapped" in data
     data.pop("remapped", None)
     remapped = []
@@ -350,8 +367,6 @@ def load_config(checkpoint_dir):
             remapped.append("{}: {} -> {}".format(stage, _shown(raw), default))
         if effort is not None:
             level = normalize_effort(effort)
-            # The same reasons batch.js logs. The note format differs: batch.js
-            # quotes the value and names only the drops it acts on.
             if model not in PRICES:
                 reason = ("no model was named" if raw is None
                           else "it came with a model that is not allowed")
@@ -422,6 +437,8 @@ def _main(argv=None):
 
     p_load = sub.add_parser("load-config", help="print the models a prior run chose")
     p_load.add_argument("--dir", required=True)
+    p_load.add_argument("--or-default", action="store_true",
+                        help="print the default models instead of none when no readable choice was saved")
 
     args = parser.parse_args(argv)
 
@@ -439,7 +456,7 @@ def _main(argv=None):
         print(json.dumps(save_config(args.dir, args.choice, projection["options"]), indent=2))
         return 0
     if args.command == "load-config":
-        config = load_config(args.dir)
+        config = load_config(args.dir, or_default=args.or_default)
         if config is None:
             print("none")
             return 1
