@@ -13,6 +13,10 @@ Then a killed session costs you the units still in flight, not the batch.
 
 A unit is done if and only if `checkpoint/<slug>.json` exists, parses, and says
 `status: verified`. Missing, malformed, `written`, `failed` all mean pending.
+The slug is the id itself when the id uses only lowercase letters, digits, `.`,
+`_` and `-`. Any other id, including one with an uppercase letter, gets a slug
+that ends in a short hash of the id, so `Alpha` and `alpha` never share a file
+on a filesystem that ignores case.
 
 Nothing else defines completion. Not the workflow's return value, not the
 artifacts on disk, not what an agent said in its summary. When you report

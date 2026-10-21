@@ -62,18 +62,23 @@ def slug_for(unit_id):
     Ids come from user data and may contain slashes, spaces, or path tricks.
     Anything that is not already filename-safe gets sanitized and tagged with a
     hash of the original, so two ids that sanitize alike still get different
-    files. Ids that differ only in case, such as Alpha and alpha, do share one
-    file on a case-insensitive filesystem such as NTFS.
-    An id that would land on the config file, in any case, is tagged the same
-    way, so a unit record and the saved models never overwrite each other on
-    a case-insensitive filesystem. A unit with such an id recorded before this
-    rule is pending again and gets redone.
+    files. The hash is lowercase hex.
+
+    NTFS and the default macOS filesystem compare names without case, so an
+    id with an uppercase letter is tagged the same way. Only plain lowercase
+    ids keep their own name, and two ids that differ only in case, such as
+    Alpha and alpha, never share a record or lock file. The readable part
+    keeps its case. An id that would land on the config file, in any case, is
+    tagged too, so a unit record and the saved models never overwrite each
+    other. A unit with an uppercase id recorded before the uppercase rule has
+    a new slug, so it is pending again and gets redone, and an old lock file
+    for it no longer holds the unit.
     """
     if not isinstance(unit_id, str) or not unit_id.strip():
         raise ValueError("unit id must be a non-empty string")
     safe = _UNSAFE.sub("_", unit_id)
     if (safe != unit_id or safe in (".", "..") or len(safe) > _MAX_SLUG
-            or safe.lower() == _CONFIG_STEM):
+            or safe != safe.lower() or safe.lower() == _CONFIG_STEM):
         digest = hashlib.sha1(unit_id.encode("utf-8")).hexdigest()[:8]
         safe = "{}.{}".format(safe[:_MAX_SLUG], digest)
     return safe
