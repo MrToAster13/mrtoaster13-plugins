@@ -1,6 +1,6 @@
 # Handoff 002: architecture fixes pl-1 and pl-2
 
-Status: pl-1 merged (PR #6, merge 3b94133). pl-2 is commit afbdd4d on branch arch/pl-2-config-store, and this handoff ships in the same PR. Once that PR merges, both candidates are done.
+Status: done. pl-1 merged through PR #6 (merge 3b94133) and pl-2 through PR #7 (merge 0d691c1). The review has no other pl-* cards for this repo, so the pl-* work is done. The follow-ups under Next and the open questions under Gotchas remain.
 
 ## Goal
 Elijah approved two fixes from the 2026-10-21 architecture review (`C:\Users\Elijah\AppData\Local\Temp\architecture-review-20261021-012113.html`, cards pl-1 and pl-2; notes in `C:\Users\Elijah\AppData\Local\Temp\arch-review\plugins-linear.md`). Both are in `plugins/autonomous-workflows/skills/batch-run/`. Each fix gets one commit, the full suite, an adversarial audit loop, then push and merge.
@@ -13,14 +13,14 @@ Elijah approved two fixes from the 2026-10-21 architecture review (`C:\Users\Eli
   - The parity tests are gone. New tests cover the guard and run the output of `load-config --or-default` through a whole batch.js run.
   - The suite went from 226 passed (baseline on main 1c20624) to 202 passed, 0 failed. The parity cases account for the drop.
   - Opus audit round 1 found two should-fix items: batch.js passed any effort string through, and the start log could disagree with the call. It also found four wording nits. Round 2 found four wording nits. Round 3 found one, a test name that covered only the model cases. All were fixed in the amended commit.
-- pl-2 is commit afbdd4d. `scripts/state.py` now owns `batch-config.json`.
+- pl-2 is commit afbdd4d, merged through PR #7 as 0d691c1. `scripts/state.py` now owns `batch-config.json`.
   - state.py gains `CONFIG_NAME`, `config_path`, `read_config` and `write_config`. estimate.py's `save_config` and `load_config` call them, and estimate.py no longer calls `state._read_json` or `state._atomic_write_json` or keeps its own copy of the file name.
   - `slug_for` hash-tags any id whose slug equals `batch-config` in any case, so a unit record can no longer replace the saved model choice, or the reverse. A unit with such an id that was recorded before this change is pending again and gets redone. Its lock file moves the same way.
   - New tests go through the new interface. The suite went from 202 passed to 215 passed, 0 failed.
   - Opus audit round 1 found no must-fix items. One should-fix and one nit were pre-existing and are listed below as follow-ups. The other nit, the lock file move, went into the commit message. Round 2 found one nit: the old `slug_for` docstring line "two different ids can never land on one file" was false on NTFS. The docstring now names the case collision.
 
 ## Next (in order)
-1. Merge the pl-2 PR and link it to the thread.
+1. Done: git shows PR #7 merged as 0d691c1.
 2. Follow-up, not started: unit ids that differ only in case, such as `Alpha` and `alpha`, share one record file on NTFS. A probe recorded `Alpha` as verified, then ran units `[alpha, Alpha]`: `todo` returned nothing and `report` counted 2 verified, though `alpha` never ran. The `slug_for` docstring now says so. One fix tags any slug with an uppercase letter. That changes the slug of every such id, so their finished units would be redone. Another fix has `read_record` check the stored `unit_id`. This needs a decision before anyone builds it.
 3. Follow-up, not started: a tagged slug can equal another id's plain slug. `slug_for("batch-config.1dd12472")` equals `slug_for("batch-config")`, and `"a_b.<hash>"` can equal the tag of `"a b"`. Both ids would have to be in one units.json.
 4. Follow-up, not started: estimate.py still calls `state._at_least` and `state._retry_while_in_use`. Neither touches the config file, so pl-2 left them alone.
