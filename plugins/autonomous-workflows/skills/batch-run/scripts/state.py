@@ -8,9 +8,9 @@ that hits one retries a few times before giving up.
 
 The invariant this module exists to enforce:
 
-    A unit is done if and only if its record file exists, parses, and carries
-    status "verified". Missing, malformed, "written", and "failed" all mean
-    pending.
+    A unit is done if and only if its record file exists, parses, names the
+    unit's own id in "unit_id", and carries status "verified". Missing,
+    malformed, a different "unit_id", "written", and "failed" all mean pending.
 
 That is why a killed session needs no error handler. Failure is the absence of
 a success record, not an event someone has to catch on the way down.
@@ -70,8 +70,8 @@ def slug_for(unit_id):
     Alpha and alpha, never share a record or lock file. The readable part
     keeps its case. An id that would land on the config file, in any case, is
     tagged too, so a unit record and the saved models never overwrite each
-    other. A unit with an uppercase id recorded before the uppercase rule has
-    a new slug, so it is pending again and gets redone, and an old lock file
+    other. A unit whose id had an uppercase letter but no tag before the
+    uppercase rule has a new slug, so it is pending again and gets redone, and an old lock file
     for it no longer holds the unit. On a filesystem that ignores case, that
     old lock still blocks the unit's lowercase twin until its lease expires,
     and read_record ignores the old record because its unit_id differs.
