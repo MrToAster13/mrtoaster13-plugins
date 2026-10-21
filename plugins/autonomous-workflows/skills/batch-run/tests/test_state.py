@@ -194,6 +194,115 @@ def test_similar_ids_do_not_collide(batch):
     assert state.read_record(cdir, "acme analyst")["status"] == "failed"
 
 
+# NTFS and the default macOS filesystem compare names without case, so these
+# tests compare names with .lower() and never depend on the host filesystem.
+
+@pytest.mark.parametrize("ids", [
+    ["Alpha", "alpha"],
+    ["ABC", "abc", "aBc"],
+    ["Unit-01", "unit-01", "UNIT-01"],
+    ["Acme/Analyst", "acme/analyst"],
+    ["Batch-Config", "batch-config", "BATCH-CONFIG"],
+])
+def test_ids_that_differ_only_in_case_get_different_files(tmp_path, ids):
+    for path_for in (state.record_path, state.lock_path):
+        names = [path_for(tmp_path, unit_id).name.lower() for unit_id in ids]
+        assert len(set(names)) == len(ids), names
+
+
+def _fold_case(path_for):
+    """Wrap a path function so it behaves as on a case-insensitive filesystem."""
+    def folded(checkpoint_dir, unit_id):
+        path = path_for(checkpoint_dir, unit_id)
+        return path.with_name(path.name.lower())
+    return folded
+
+
+def test_a_verified_id_does_not_mark_its_case_twin_done(tmp_path, monkeypatch):
+    """The probe from handoff 002: Alpha verified, then units [alpha, Alpha]."""
+    monkeypatch.setattr(state, "record_path", _fold_case(state.record_path))
+    cdir = tmp_path / "checkpoint"
+    state.record(cdir, "Alpha", "verified")
+    units = [{"id": "alpha"}, {"id": "Alpha"}]
+
+    assert [u["id"] for u in state.todo(cdir, units)] == ["alpha"]
+    summary = state.report(cdir, units)
+    assert summary["verified"] == 1
+    assert summary["ids"]["pending"] == ["alpha"]
+
+
+def test_a_legacy_record_does_not_mark_its_case_twin_done(tmp_path, monkeypatch):
+    """A checkpoint written before the uppercase tag: Alpha.json says Alpha.
+
+    On a case-insensitive filesystem, opening alpha.json reads that file. The
+    unit_id inside it is Alpha, so alpha must still count as pending.
+    """
+    monkeypatch.setattr(state, "record_path", _fold_case(state.record_path))
+    cdir = tmp_path / "checkpoint"
+    cdir.mkdir()
+    legacy = {"unit_id": "Alpha", "status": "verified", "attempt": 1}
+    (cdir / "alpha.json").write_text(json.dumps(legacy), encoding="utf-8")
+    units = [{"id": "alpha"}, {"id": "Alpha"}]
+
+    assert state.read_record(cdir, "alpha") is None
+    assert [u["id"] for u in state.todo(cdir, units)] == ["alpha", "Alpha"]
+    summary = state.report(cdir, units)
+    assert summary["verified"] == 0
+
+
+@pytest.mark.parametrize("payload", [
+    {"status": "verified"},
+    {"unit_id": "other", "status": "verified"},
+    {"unit_id": None, "status": "verified"},
+    {"unit_id": ["u1"], "status": "verified"},
+])
+def test_a_record_that_names_another_unit_is_pending(tmp_path, payload):
+    cdir = tmp_path / "checkpoint"
+    cdir.mkdir()
+    state.record_path(cdir, "u1").write_text(json.dumps(payload), encoding="utf-8")
+
+    assert state.read_record(cdir, "u1") is None
+    assert [u["id"] for u in state.todo(cdir, [{"id": "u1"}])] == ["u1"]
+
+
+def test_record_reads_back_its_own_unit_id(tmp_path):
+    cdir = tmp_path / "checkpoint"
+    state.record(cdir, "Alpha", "verified")
+    assert state.read_record(cdir, "Alpha")["unit_id"] == "Alpha"
+
+
+def test_a_claimed_id_does_not_lock_its_case_twin(tmp_path, monkeypatch):
+    monkeypatch.setattr(state, "lock_path", _fold_case(state.lock_path))
+    cdir = tmp_path / "checkpoint"
+    assert state.claim(cdir, "Alpha", owner="one") is True
+    assert state.claim(cdir, "alpha", owner="two") is True
+
+
+@pytest.mark.parametrize("unit_id", [
+    "alpha", "abc", "unit-01", "acme-secops-analyst", "v1.2_final", "x" * 80,
+], ids=["alpha", "abc", "unit-01", "kebab", "dots-underscore", "max-length"])
+def test_lowercase_safe_ids_keep_their_plain_slug(unit_id):
+    assert state.slug_for(unit_id) == unit_id
+
+
+@pytest.mark.parametrize("unit_id, slug", [
+    ("acme/analyst", "acme_analyst.27ae6057"),
+    ("Acme/Analyst", "Acme_Analyst.2b3deb13"),
+    ("Batch-Config", "Batch-Config.3454032f"),
+    ("batch-config", "batch-config.1dd12472"),
+], ids=["unsafe", "unsafe-upper", "config-upper", "config"])
+def test_ids_that_were_already_tagged_keep_their_slug(unit_id, slug):
+    assert state.slug_for(unit_id) == slug
+
+
+def test_an_uppercase_id_gets_a_lowercase_hex_tag():
+    slug = state.slug_for("Alpha")
+    readable, _, tag = slug.rpartition(".")
+    assert readable == "Alpha"
+    assert len(tag) == 8 and tag == tag.lower()
+    assert all(c in "0123456789abcdef" for c in tag)
+
+
 def test_duplicate_unit_ids_are_rejected_at_load(tmp_path):
     path = tmp_path / "units.json"
     path.write_text(json.dumps([{"id": "a"}, {"id": "a"}]), encoding="utf-8")

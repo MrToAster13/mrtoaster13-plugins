@@ -8,9 +8,9 @@ that hits one retries a few times before giving up.
 
 The invariant this module exists to enforce:
 
-    A unit is done if and only if its record file exists, parses, and carries
-    status "verified". Missing, malformed, "written", and "failed" all mean
-    pending.
+    A unit is done if and only if its record file exists, parses, names the
+    unit's own id in "unit_id", and carries status "verified". Missing,
+    malformed, a different "unit_id", "written", and "failed" all mean pending.
 
 That is why a killed session needs no error handler. Failure is the absence of
 a success record, not an event someone has to catch on the way down.
@@ -62,18 +62,25 @@ def slug_for(unit_id):
     Ids come from user data and may contain slashes, spaces, or path tricks.
     Anything that is not already filename-safe gets sanitized and tagged with a
     hash of the original, so two ids that sanitize alike still get different
-    files. Ids that differ only in case, such as Alpha and alpha, do share one
-    file on a case-insensitive filesystem such as NTFS.
-    An id that would land on the config file, in any case, is tagged the same
-    way, so a unit record and the saved models never overwrite each other on
-    a case-insensitive filesystem. A unit with such an id recorded before this
-    rule is pending again and gets redone.
+    files. The hash is lowercase hex.
+
+    NTFS and the default macOS filesystem compare names without case, so an
+    id with an uppercase letter is tagged the same way. Only plain lowercase
+    ids keep their own name, and two ids that differ only in case, such as
+    Alpha and alpha, never share a record or lock file. The readable part
+    keeps its case. An id that would land on the config file, in any case, is
+    tagged too, so a unit record and the saved models never overwrite each
+    other. A unit whose id had an uppercase letter but no tag before the
+    uppercase rule has a new slug, so it is pending again and gets redone, and an old lock file
+    for it no longer holds the unit. On a filesystem that ignores case, that
+    old lock still blocks the unit's lowercase twin until its lease expires,
+    and read_record ignores the old record because its unit_id differs.
     """
     if not isinstance(unit_id, str) or not unit_id.strip():
         raise ValueError("unit id must be a non-empty string")
     safe = _UNSAFE.sub("_", unit_id)
     if (safe != unit_id or safe in (".", "..") or len(safe) > _MAX_SLUG
-            or safe.lower() == _CONFIG_STEM):
+            or safe != safe.lower() or safe.lower() == _CONFIG_STEM):
         digest = hashlib.sha1(unit_id.encode("utf-8")).hexdigest()[:8]
         safe = "{}.{}".format(safe[:_MAX_SLUG], digest)
     return safe
@@ -162,6 +169,11 @@ def read_record(checkpoint_dir, unit_id):
     Every failure mode collapses to None on purpose: a missing file, a file
     truncated by a killed process, a hand-edited file with a bogus status. The
     caller then treats the unit as pending, which is always the safe answer.
+
+    A record that names a different unit_id also counts as absent. Before ids
+    with uppercase letters were tagged, `Alpha` wrote `Alpha.json`; on a
+    filesystem that ignores case, opening `alpha.json` reads that file. The
+    unit_id check stops such a leftover record from marking `alpha` done.
     """
     path = record_path(checkpoint_dir, unit_id)
     try:
@@ -169,6 +181,8 @@ def read_record(checkpoint_dir, unit_id):
     except (OSError, ValueError, RecursionError):
         return None
     if not isinstance(data, dict) or data.get("status") not in STATUSES:
+        return None
+    if data.get("unit_id") != unit_id:
         return None
     return data
 
