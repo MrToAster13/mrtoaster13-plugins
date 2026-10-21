@@ -231,6 +231,46 @@ def test_a_verified_id_does_not_mark_its_case_twin_done(tmp_path, monkeypatch):
     assert summary["ids"]["pending"] == ["alpha"]
 
 
+def test_a_legacy_record_does_not_mark_its_case_twin_done(tmp_path, monkeypatch):
+    """A checkpoint written before the uppercase tag: Alpha.json says Alpha.
+
+    On a case-insensitive filesystem, opening alpha.json reads that file. The
+    unit_id inside it is Alpha, so alpha must still count as pending.
+    """
+    monkeypatch.setattr(state, "record_path", _fold_case(state.record_path))
+    cdir = tmp_path / "checkpoint"
+    cdir.mkdir()
+    legacy = {"unit_id": "Alpha", "status": "verified", "attempt": 1}
+    (cdir / "alpha.json").write_text(json.dumps(legacy), encoding="utf-8")
+    units = [{"id": "alpha"}, {"id": "Alpha"}]
+
+    assert state.read_record(cdir, "alpha") is None
+    assert [u["id"] for u in state.todo(cdir, units)] == ["alpha", "Alpha"]
+    summary = state.report(cdir, units)
+    assert summary["verified"] == 0
+
+
+@pytest.mark.parametrize("payload", [
+    {"status": "verified"},
+    {"unit_id": "other", "status": "verified"},
+    {"unit_id": None, "status": "verified"},
+    {"unit_id": ["u1"], "status": "verified"},
+])
+def test_a_record_that_names_another_unit_is_pending(tmp_path, payload):
+    cdir = tmp_path / "checkpoint"
+    cdir.mkdir()
+    state.record_path(cdir, "u1").write_text(json.dumps(payload), encoding="utf-8")
+
+    assert state.read_record(cdir, "u1") is None
+    assert [u["id"] for u in state.todo(cdir, [{"id": "u1"}])] == ["u1"]
+
+
+def test_record_reads_back_its_own_unit_id(tmp_path):
+    cdir = tmp_path / "checkpoint"
+    state.record(cdir, "Alpha", "verified")
+    assert state.read_record(cdir, "Alpha")["unit_id"] == "Alpha"
+
+
 def test_a_claimed_id_does_not_lock_its_case_twin(tmp_path, monkeypatch):
     monkeypatch.setattr(state, "lock_path", _fold_case(state.lock_path))
     cdir = tmp_path / "checkpoint"

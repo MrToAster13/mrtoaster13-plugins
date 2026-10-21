@@ -72,7 +72,9 @@ def slug_for(unit_id):
     tagged too, so a unit record and the saved models never overwrite each
     other. A unit with an uppercase id recorded before the uppercase rule has
     a new slug, so it is pending again and gets redone, and an old lock file
-    for it no longer holds the unit.
+    for it no longer holds the unit. On a filesystem that ignores case, that
+    old lock still blocks the unit's lowercase twin until its lease expires,
+    and read_record ignores the old record because its unit_id differs.
     """
     if not isinstance(unit_id, str) or not unit_id.strip():
         raise ValueError("unit id must be a non-empty string")
@@ -167,6 +169,11 @@ def read_record(checkpoint_dir, unit_id):
     Every failure mode collapses to None on purpose: a missing file, a file
     truncated by a killed process, a hand-edited file with a bogus status. The
     caller then treats the unit as pending, which is always the safe answer.
+
+    A record that names a different unit_id also counts as absent. Before ids
+    with uppercase letters were tagged, `Alpha` wrote `Alpha.json`; on a
+    filesystem that ignores case, opening `alpha.json` reads that file. The
+    unit_id check stops such a leftover record from marking `alpha` done.
     """
     path = record_path(checkpoint_dir, unit_id)
     try:
@@ -174,6 +181,8 @@ def read_record(checkpoint_dir, unit_id):
     except (OSError, ValueError, RecursionError):
         return None
     if not isinstance(data, dict) or data.get("status") not in STATUSES:
+        return None
+    if data.get("unit_id") != unit_id:
         return None
     return data
 

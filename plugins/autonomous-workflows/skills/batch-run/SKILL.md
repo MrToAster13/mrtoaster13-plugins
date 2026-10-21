@@ -11,12 +11,15 @@ Then a killed session costs you the units still in flight, not the batch.
 
 ## The one rule
 
-A unit is done if and only if `checkpoint/<slug>.json` exists, parses, and says
-`status: verified`. Missing, malformed, `written`, `failed` all mean pending.
-The slug is the id itself when the id uses only lowercase letters, digits, `.`,
-`_` and `-`. Any other id, including one with an uppercase letter, gets a slug
+A unit is done if and only if `checkpoint/<slug>.json` exists, parses, names
+the unit's own id in `unit_id`, and says `status: verified`. Missing, malformed,
+a different `unit_id`, `written`, `failed` all mean pending.
+The slug is the id itself only when the id uses only ASCII lowercase letters,
+digits, `.`, `_` and `-` and needs no other tag (`batch-config`, `.`, `..` and
+ids over 80 characters get one). Any id with an uppercase letter gets a slug
 that ends in a short hash of the id, so `Alpha` and `alpha` never share a file
-on a filesystem that ignores case.
+on a filesystem that ignores case. A lock left by an older version under
+`Alpha.lock` still blocks `alpha` on such a filesystem until its lease expires.
 
 Nothing else defines completion. Not the workflow's return value, not the
 artifacts on disk, not what an agent said in its summary. When you report
