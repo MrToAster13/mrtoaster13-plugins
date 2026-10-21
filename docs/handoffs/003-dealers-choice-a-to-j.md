@@ -26,7 +26,7 @@ Elijah answered the batched questions from handoff 001 (a to f), from the chat (
 1. Elijah approves or changes the design for (a), below. Nothing gets built before that.
 2. Elijah reviews the ELI-388 copy and picks this draft or the 5ae356c branch.
 3. Follow-up, not started: `skills/factory/SKILL.md` in claude-config (lines 359-361 and 427-428) exempts "the run's own tickets", plural, and promotes other tickets from Backlog to Todo. CLAUDE.md exempts only the status of the single worked ticket. Found by the PR #20 audit; it predates that PR.
-4. Follow-up, not started (handoff 002, Next 3): a hand-made id can equal another id's tagged slug, such as `batch-config.1dd12472`. Reaching it takes typing the hash.
+4. Follow-up, not started (handoff 002, Next 3): a hand-made id can equal another id's tagged slug, such as `batch-config.1dd12472`. Reaching it takes typing the hash. Porting the `~/.claude` `load_units` guard (see the (a) design) would close it.
 5. Follow-up, not started (handoff 002, Next 4): estimate.py still calls `state._at_least` and `state._retry_while_in_use`.
 
 ## Design for (a), waiting on Elijah
@@ -34,7 +34,7 @@ The six skills live in both `plugins/` here and `C:\Users\Elijah\.claude\skills\
 
 | Skill | Newer copy | What differs |
 |---|---|---|
-| batch-run | Both, in different parts | The plugin has pl-1, pl-2 and the case tag. The `~/.claude` copy has NaN and Infinity rejection, id-collision guards and sanitized filenames that the plugin lacks. |
+| batch-run | Both, in different parts | The plugin has pl-1, pl-2 and the case tag. The `~/.claude` copy has NaN and Infinity rejection and a `load_units` guard that refuses ids that would share a file. The plugin lacks both. Both copies sanitize filenames. |
 | factory | `~/.claude` | The plugin lacks the blocker ladder (resolver agents, then a blocker ticket) and names no vault path for `ticket.py`. |
 | fleet-health | Neither | `~/.claude` hard-codes `C:\Users\Elijah` paths; the plugin uses `$HOME`. Both are on purpose. |
 | tdd-loop | Neither | `~/.claude` is machine-specific on purpose. |
@@ -43,7 +43,8 @@ The six skills live in both `plugins/` here and `C:\Users\Elijah\.claude\skills\
 
 Proposed merge directions, whichever repo ends up owning them:
 - batch-run: port the `~/.claude`-only hardening into the plugin, then make one copy the source.
-- factory, handoff, resume: copy from `~/.claude` into the plugin.
+- factory: port the blocker ladder into the plugin by hand. The `~/.claude` copy names `ELI-n` and `C:\Users\Elijah` paths, the plugin stays generic (`<KEY>-<n>`), and the plugins repo is public. Four files differ: SKILL.md and the closing, ledger and team files.
+- handoff, resume: port the em dash removal into the plugin, but keep the plugin's clear-instead-of-compact framing, since the plugin is named for it.
 - fleet-health and tdd-loop: keep two variants, generic in the plugin and machine-specific in `~/.claude`.
 
 The ownership options are the three from handoff 001 question (a): claude-config owns them, the plugins repo owns them and claude-config installs them, or both keep copies with a sync script.

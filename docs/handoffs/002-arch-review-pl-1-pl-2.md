@@ -27,7 +27,7 @@ Elijah approved two fixes from the 2026-10-21 architecture review (`C:\Users\Eli
 
 ## Key decisions
 - batch.js does not check which effort levels are valid. That list lives in estimate.py only. A hand-built `{"model": "opus", "effort": "banana"}` reaches agent(). SKILL.md says the models must come from load-config.
-- The canonical batch-run copy is this repo's `plugins/autonomous-workflows/skills/batch-run`. A second, older copy lives at `C:\Users\Elijah\.claude\skills\batch-run` in claude-config (last commit 8949d21, 2026-10-19). It still has the built-in batch.js defaults, no `--or-default` and the old config handling, and this work did not change it. That copy is self-contained, so nothing in it breaks, and nothing in this repo imports from it. Syncing it waits on Elijah's ownership answer, question (a) in handoff 001.
+- The canonical batch-run copy is this repo's `plugins/autonomous-workflows/skills/batch-run`. A second, older copy lives at `C:\Users\Elijah\.claude\skills\batch-run` in claude-config (last commit 8949d21, 2026-10-19). It still has the built-in batch.js defaults, no `--or-default` and the old config handling, and this work did not change it. That copy is self-contained, so nothing in it breaks, and nothing in this repo imports from it. Syncing it waits on Elijah's ownership answer, question (a) in handoff 001. Later finding: the two copies diverged both ways, and the `~/.claude` copy has hardening the plugin lacks. See the (a) design in handoff 003.
 - pl-2 fixed only the collision with the config file and left the case collision between two unit ids (Next item 2) alone. Fixing that one redoes finished work, which goes beyond pl-2.
 
 ## Relevant files
@@ -37,6 +37,6 @@ Elijah approved two fixes from the 2026-10-21 architecture review (`C:\Users\Eli
 - `plugins/autonomous-workflows/skills/batch-run/tests/test_state.py`, `tests/test_estimate.py`, `tests/test_batch_js.py`.
 
 ## Gotchas / open questions
-- Leave the untracked `fuzz9.out` in the repo root alone. Its deletion waits on Elijah, question (d) in handoff 001.
-- Elijah's answers to questions (a) through (f) in handoff 001, and to (g) and (h) asked in chat after it, are still pending.
+- Leave the untracked `fuzz9.out` in the repo root alone. Its deletion waits on Elijah, question (d) in handoff 001. Later deleted after a backup; see handoff 003 (d).
+- Elijah's answers to questions (a) through (f) in handoff 001, and to (g) and (h) asked in chat after it, were pending when this was written. Handoff 003 records the answers.
 - A pytest parametrize value of 100,000 bytes becomes the test id, and here that test errored before it ran. Short `ids` fixed it.
