@@ -34,12 +34,12 @@ The six skills live in both `plugins/` here and `C:\Users\Elijah\.claude\skills\
 
 | Skill | Newer copy | What differs |
 |---|---|---|
-| batch-run | Both, in different parts | The plugin has pl-1, pl-2 and the case tag. The `~/.claude` copy has NaN and Infinity rejection and a `load_units` guard that refuses ids that would share a file. The plugin lacks both. Both copies sanitize filenames. |
+| batch-run | Both, in different parts | The plugin has pl-1, pl-2 and the case tag. The `~/.claude` copy has NaN and Infinity rejection and a `load_units` guard that refuses ids that would share a file. The plugin lacks both. Both copies sanitize filenames. This list comes from a partial diff and may be incomplete. |
 | factory | `~/.claude` | The plugin lacks the blocker ladder (resolver agents, then a blocker ticket) and names no vault path for `ticket.py`. |
 | fleet-health | Neither | `~/.claude` hard-codes `C:\Users\Elijah` paths; the plugin uses `$HOME`. Both are on purpose. |
 | tdd-loop | Neither | `~/.claude` is machine-specific on purpose. |
 | handoff | `~/.claude` | Em dashes removed. |
-| resume | `~/.claude` | Em dashes removed, new description, plugin-only loop line dropped. |
+| resume | `~/.claude` | Em dashes removed, new description, plugin-only loop line dropped, root step no longer tied to the handoff skill, and a new paragraph on where handoff docs live. |
 
 Proposed merge directions, whichever repo ends up owning them:
 - batch-run: port the `~/.claude`-only hardening into the plugin, then make one copy the source.
