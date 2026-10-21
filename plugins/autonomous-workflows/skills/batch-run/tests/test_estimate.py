@@ -183,7 +183,7 @@ def test_an_old_sonnet_config_is_remapped_and_flagged(tmp_path):
     """A checkpoint saved before Sonnet was dropped must not resume on Sonnet."""
     cdir = tmp_path / "checkpoint"
     cdir.mkdir()
-    (cdir / estimate.CONFIG_NAME).write_text(json.dumps({
+    state.config_path(cdir).write_text(json.dumps({
         "choice": "sonnet-both",
         "worker": {"model": "sonnet"},
         "verifier": {"model": "sonnet", "effort": "low"},
@@ -216,7 +216,7 @@ def test_an_old_sonnet_config_is_remapped_and_flagged(tmp_path):
 def test_a_hand_edited_worker_is_normalised_not_crashed_on(tmp_path, stage, expected, note):
     cdir = tmp_path / "checkpoint"
     cdir.mkdir()
-    (cdir / estimate.CONFIG_NAME).write_text(json.dumps({
+    state.config_path(cdir).write_text(json.dumps({
         "choice": "opus-both", "worker": stage, "verifier": {"model": "opus"},
     }), encoding="utf-8")
 
@@ -230,7 +230,7 @@ def test_a_hand_edited_worker_is_normalised_not_crashed_on(tmp_path, stage, expe
 def test_a_stale_remap_note_in_the_file_is_not_carried_forward(tmp_path):
     cdir = tmp_path / "checkpoint"
     cdir.mkdir()
-    (cdir / estimate.CONFIG_NAME).write_text(json.dumps({
+    state.config_path(cdir).write_text(json.dumps({
         "choice": "opus-both", "worker": {"model": "opus"}, "verifier": {"model": "opus"},
         "remapped": ["worker: sonnet -> haiku"],
     }), encoding="utf-8")
@@ -249,7 +249,7 @@ def test_a_current_config_carries_no_remap_note(tmp_path):
 def test_a_mangled_config_reads_as_no_choice(tmp_path):
     cdir = tmp_path / "checkpoint"
     cdir.mkdir()
-    (cdir / estimate.CONFIG_NAME).write_text('{"choice": "haiku-b', encoding="utf-8")
+    state.config_path(cdir).write_text('{"choice": "haiku-b', encoding="utf-8")
 
     assert estimate.load_config(cdir) is None
     # The run itself gets the Haiku-writer, Opus-verifier default from or_default.
@@ -263,7 +263,7 @@ def test_or_default_returns_the_default_record_and_writes_nothing(tmp_path):
                       "worker": {"model": estimate.STAGE_DEFAULTS["worker"]},
                       "verifier": {"model": estimate.STAGE_DEFAULTS["verifier"]}}
     # Nothing saved, so the next run still asks.
-    assert not (cdir / estimate.CONFIG_NAME).exists()
+    assert not state.config_path(cdir).exists()
     assert estimate.load_config(cdir) is None
 
 
@@ -271,11 +271,11 @@ def test_or_default_returns_the_default_record_and_writes_nothing(tmp_path):
 def test_or_default_covers_an_unreadable_record(tmp_path, body):
     cdir = tmp_path / "checkpoint"
     cdir.mkdir()
-    (cdir / estimate.CONFIG_NAME).write_text(body, encoding="utf-8")
+    state.config_path(cdir).write_text(body, encoding="utf-8")
     assert estimate.load_config(cdir) is None
     assert estimate.load_config(cdir, or_default=True) == estimate.default_config()
     # The bad file is left for the person to look at.
-    assert (cdir / estimate.CONFIG_NAME).read_text(encoding="utf-8") == body
+    assert state.config_path(cdir).read_text(encoding="utf-8") == body
 
 
 def test_or_default_still_returns_a_saved_choice(tmp_path):
@@ -408,7 +408,7 @@ def test_normalize_model_matches_whole_words_only(raw, expected):
 
 def write_config(cdir, payload):
     cdir.mkdir(exist_ok=True)
-    (cdir / estimate.CONFIG_NAME).write_text(json.dumps(payload), encoding="utf-8")
+    state.config_path(cdir).write_text(json.dumps(payload), encoding="utf-8")
 
 
 @pytest.mark.parametrize("raw, model", [
@@ -509,7 +509,7 @@ def test_a_remap_is_written_back_so_the_next_load_is_clean(tmp_path):
     first = estimate.load_config(cdir)
     assert first["remapped"]
 
-    on_disk = json.loads((cdir / estimate.CONFIG_NAME).read_text(encoding="utf-8"))
+    on_disk = json.loads(state.config_path(cdir).read_text(encoding="utf-8"))
     assert on_disk == {"choice": "custom", "worker": {"model": "haiku"},
                        "verifier": {"model": "opus", "effort": "high"}}
 
@@ -523,15 +523,15 @@ def test_a_failed_write_back_is_reported_and_the_models_still_load(tmp_path, mon
     write_config(cdir, {"choice": "sonnet-both", "worker": {"model": "sonnet"},
                         "verifier": {"model": "opus"}})
 
-    def refuse(path, payload):
+    def refuse(checkpoint_dir, payload):
         raise OSError("read-only checkpoint")
 
-    monkeypatch.setattr(estimate.state, "_atomic_write_json", refuse)
+    monkeypatch.setattr(state, "write_config", refuse)
     config = estimate.load_config(cdir)
     assert config["worker"] == {"model": "haiku"}
     assert config["remapped"][-1] == "not written back: read-only checkpoint"
     # The file is untouched, so the next load reports the same remap again.
-    raw = json.loads((cdir / estimate.CONFIG_NAME).read_text(encoding="utf-8"))
+    raw = json.loads(state.config_path(cdir).read_text(encoding="utf-8"))
     assert raw["worker"] == {"model": "sonnet"}
 
 
@@ -546,7 +546,7 @@ def test_a_failed_write_back_leaves_no_temp_file(tmp_path, monkeypatch):
     monkeypatch.setattr(state.os, "replace", deny)
     config = estimate.load_config(cdir)
     assert config["remapped"][-1] == "not written back: denied"
-    assert sorted(p.name for p in cdir.iterdir()) == [estimate.CONFIG_NAME]
+    assert sorted(p.name for p in cdir.iterdir()) == [state.CONFIG_NAME]
 
 
 def test_a_failed_write_after_only_a_tidy_is_still_reported(tmp_path, monkeypatch):
@@ -575,10 +575,10 @@ def test_a_clean_record_is_not_rewritten(tmp_path, monkeypatch):
     cdir = tmp_path / "checkpoint"
     estimate.save_config(cdir, "opus-low-effort", projection["options"])
 
-    def refuse(path, payload):
+    def refuse(checkpoint_dir, payload):
         raise AssertionError("a clean record was rewritten")
 
-    monkeypatch.setattr(estimate.state, "_atomic_write_json", refuse)
+    monkeypatch.setattr(state, "write_config", refuse)
     assert "remapped" not in estimate.load_config(cdir)
 
 
@@ -590,7 +590,7 @@ def test_extra_stage_keys_are_reported_and_written_back(tmp_path):
     config = estimate.load_config(cdir)
     assert config["worker"] == {"model": "haiku"}
     assert config["remapped"] == ["worker: key label dropped", "worker: key maxTurns dropped"]
-    on_disk = json.loads((cdir / estimate.CONFIG_NAME).read_text(encoding="utf-8"))
+    on_disk = json.loads(state.config_path(cdir).read_text(encoding="utf-8"))
     assert on_disk["worker"] == {"model": "haiku"}
     assert "remapped" not in estimate.load_config(cdir)
 
@@ -606,7 +606,7 @@ def test_a_tidy_with_nothing_to_report_is_still_written_back(tmp_path, extra):
     cdir = tmp_path / "checkpoint"
     write_config(cdir, dict(clean, **extra))
     assert "remapped" not in estimate.load_config(cdir)
-    on_disk = json.loads((cdir / estimate.CONFIG_NAME).read_text(encoding="utf-8"))
+    on_disk = json.loads(state.config_path(cdir).read_text(encoding="utf-8"))
     assert on_disk == clean
 
 
@@ -625,7 +625,7 @@ def test_a_config_saved_with_a_byte_order_mark_still_loads(tmp_path):
     cdir.mkdir()
     body = json.dumps({"choice": "opus-both", "worker": {"model": "opus"},
                        "verifier": {"model": "opus"}})
-    (cdir / estimate.CONFIG_NAME).write_bytes(b"\xef\xbb\xbf" + body.encode("utf-8"))
+    state.config_path(cdir).write_bytes(b"\xef\xbb\xbf" + body.encode("utf-8"))
     config = estimate.load_config(cdir)
     assert config["choice"] == "opus-both"
     assert "remapped" not in config
@@ -634,7 +634,7 @@ def test_a_config_saved_with_a_byte_order_mark_still_loads(tmp_path):
 def test_a_config_read_retries_while_windows_reports_the_file_in_use(tmp_path, monkeypatch):
     cdir = tmp_path / "checkpoint"
     cdir.mkdir()
-    (cdir / estimate.CONFIG_NAME).write_text(json.dumps(
+    state.config_path(cdir).write_text(json.dumps(
         {"choice": "opus-both", "worker": {"model": "opus"}, "verifier": {"model": "opus"}}),
         encoding="utf-8")
     real_open, calls = open, []
@@ -654,7 +654,7 @@ def test_a_config_nested_too_deep_reads_as_no_choice(tmp_path):
     cdir = tmp_path / "checkpoint"
     cdir.mkdir()
     depth = 100_000
-    (cdir / estimate.CONFIG_NAME).write_text(
+    state.config_path(cdir).write_text(
         '{"worker": ' + "[" * depth + "]" * depth + ', "verifier": {"model": "opus"}}',
         encoding="utf-8")
     assert estimate.load_config(cdir) is None
@@ -783,3 +783,13 @@ def test_the_provider_caveat_names_every_provider_and_labels_the_guesses():
                  "anthropic_google_cloud", "gateway", "Haiku 4.5",
                  "Opus 4.6", "Opus 4.7", "unverified"):
         assert word in scale, word
+
+
+@pytest.mark.parametrize("unit_id", ["batch-config", "Batch-Config"])
+def test_a_unit_named_like_the_config_leaves_the_saved_choice_alone(tmp_path, unit_id):
+    projection = estimate.project(make_units(1, tmp_path), SPEC)
+    cdir = tmp_path / "checkpoint"
+    saved = estimate.save_config(cdir, "opus-low-effort", projection["options"])
+    state.record(cdir, unit_id, "verified")
+    assert estimate.load_config(cdir) == saved
+    assert state.read_record(cdir, unit_id)["status"] == "verified"

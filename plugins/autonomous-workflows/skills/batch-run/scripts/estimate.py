@@ -26,8 +26,6 @@ from pathlib import Path
 
 import state
 
-CONFIG_NAME = "batch-config.json"
-
 # USD per million tokens. Subagents run on Opus or Haiku only, so those are the
 # only two models the menu prices. Each row prices the model the alias resolves
 # to on the Claude API in the newest alias table of Claude Code 2.1.296. Other
@@ -279,8 +277,7 @@ def save_config(checkpoint_dir, choice, projection_options):
     option = resolve_choice(choice, projection_options)
     choice = option["key"]
     payload = {"choice": choice, "worker": option["worker"], "verifier": option["verifier"]}
-    path = Path(checkpoint_dir) / CONFIG_NAME
-    state._atomic_write_json(path, payload)
+    state.write_config(checkpoint_dir, payload)
     return payload
 
 
@@ -334,13 +331,9 @@ def load_config(checkpoint_dir, or_default=False):
     so, even when the change was only a tidy, and the corrected models are
     still returned.
     """
-    path = Path(checkpoint_dir) / CONFIG_NAME
-    try:
-        # Reads a file saved with a byte order mark, and retries while Windows
-        # reports the file in use.
-        data = state._read_json(path)
-    except (OSError, ValueError, RecursionError):
-        return default_config() if or_default else None
+    # Reads a file saved with a byte order mark, and retries while Windows
+    # reports the file in use.
+    data = state.read_config(checkpoint_dir)
     if not isinstance(data, dict) or "worker" not in data or "verifier" not in data:
         return default_config() if or_default else None
     tidied = "remapped" in data
@@ -389,7 +382,7 @@ def load_config(checkpoint_dir, or_default=False):
         data["choice"] = choice
     if remapped or tidied:
         try:
-            state._atomic_write_json(path, dict(data))
+            state.write_config(checkpoint_dir, dict(data))
         except OSError as exc:
             remapped.append("not written back: {}".format(exc))
     if remapped:
