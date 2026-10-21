@@ -11,10 +11,16 @@ export const meta = {
 // Everything domain-specific arrives through args. The skill reads units.json
 // and spec.md on the outside and passes them in, because workflow scripts have
 // no filesystem access of their own.
-// With no models, stageOpts runs a Haiku writer and an Opus verifier rather
-// than inheriting the session model. Inheriting would run 30 units in an Opus
-// session as 60 or more Opus agents, and the session model may be one
-// subagents must not run on. stageOpts holds the only copy of those defaults.
+// models comes from `estimate.py load-config --or-default`, which owns the
+// model and effort policy: it maps a saved name to its alias, moves a stage
+// that names a model no longer allowed to that stage's default, drops an
+// effort it cannot pass, and returns the defaults (Haiku writer, Opus
+// verifier) when no readable choice was saved. This script does not correct
+// anything. Before any agent runs it refuses a stage that is not an object,
+// names a model other than opus or haiku, or carries an effort load-config
+// would never emit (one on haiku, or one that is not plain lowercase
+// letters), so a stray 'sonnet' never reaches agent() and the session model
+// is never inherited. Which levels are valid stays in estimate.py.
 const {
   units = [],
   worker = '',
@@ -25,73 +31,33 @@ const {
   models = null,
 } = args || {}
 
-// The rules match load_config in estimate.py. A model name maps to an alias
-// when exactly one family word appears in it as a whole word, so
-// 'us.anthropic.claude-opus-5-5' and 'Opus 5.5' are opus while 'claude-opusx'
-// and 'sonnet-opus' are not allowed. A model that is not allowed falls back to
-// the stage default without its effort, so a stray 'sonnet' from an old config
-// never reaches agent(). A null model counts as no model, as in estimate.py.
-// Off the Claude API, and under the binary's second alias table, the haiku
-// alias resolves to Haiku 4.5, which has no effort parameter. Nothing here can
-// tell which provider or table a session uses, so an effort on haiku is
-// dropped. An effort that is not a known level is dropped too. Each drop is
-// logged once per stage.
-// Only ASCII whitespace is trimmed, matching estimate.py.
 const ALLOWED_MODELS = ['opus', 'haiku']
-const FAMILIES = ['opus', 'haiku', 'sonnet', 'fable', 'mythos']
-const EFFORT_LEVELS = ['low', 'medium', 'high', 'xhigh', 'max']
-// A loop rather than a regex, so a long run of inner spaces stays linear.
-const isAsciiSpace = (code) => code === 32 || (code >= 9 && code <= 13)
-const asciiTrim = (text) => {
-  let start = 0
-  let end = text.length
-  while (start < end && isAsciiSpace(text.charCodeAt(start))) start++
-  while (end > start && isAsciiSpace(text.charCodeAt(end - 1))) end--
-  return text.slice(start, end)
-}
-const normalizeModel = (value) => {
-  if (typeof value !== 'string') return null
-  const name = asciiTrim(value).toLowerCase()
-  const found = [...new Set((name.match(/[a-z]+/g) || []).filter((w) => FAMILIES.includes(w)))]
-  return found.length === 1 && ALLOWED_MODELS.includes(found[0]) ? found[0] : name
-}
-const normalizeEffort = (value) => {
-  if (typeof value !== 'string') return null
-  const level = asciiTrim(value).toLowerCase()
-  return EFFORT_LEVELS.includes(level) ? level : null
-}
-const warned = new Set()
-const warnOnce = (key, message) => {
-  if (warned.has(key)) return
-  warned.add(key)
-  log(message)
+const STAGES = ['worker', 'verifier']
+const isObject = (value) => value !== null && typeof value === 'object' && !Array.isArray(value)
+// Returns why models cannot run, or null when every stage names opus or haiku
+// and any effort could have come from load-config.
+const refusal = () => {
+  if (!isObject(models)) return `args.models is ${JSON.stringify(models)}, not the output of estimate.py load-config --or-default`
+  for (const stage of STAGES) {
+    const cfg = models[stage]
+    if (!isObject(cfg)) return `models.${stage} is ${JSON.stringify(cfg)}, not a model setting`
+    if (!ALLOWED_MODELS.includes(cfg.model)) {
+      return `models.${stage}.model is ${JSON.stringify(cfg.model)}, not one of ${ALLOWED_MODELS.join(', ')}`
+    }
+    if (cfg.effort === undefined || cfg.effort === null) continue
+    if (typeof cfg.effort !== 'string' || !/^[a-z]+$/.test(cfg.effort)) {
+      return `models.${stage}.effort is ${JSON.stringify(cfg.effort)}, not a lowercase effort level`
+    }
+    if (cfg.model === 'haiku') {
+      return `models.${stage}.effort is ${JSON.stringify(cfg.effort)}, but haiku takes no effort override`
+    }
+  }
+  return null
 }
 const stageOpts = (stage, label, phase, schema) => {
-  const fallback = stage === 'worker' ? 'haiku' : 'opus'
-  // A models value that is not an object (0, false, '', a list) names nothing.
-  const raw = models && typeof models === 'object' && !Array.isArray(models) ? models[stage] : undefined
-  const isSetting = raw && typeof raw === 'object' && !Array.isArray(raw)
-  if (raw !== undefined && raw !== null && typeof raw !== 'string' && !isSetting) {
-    warnOnce(`${stage}:model`, `${stage}: ${JSON.stringify(raw)} is not a model setting, running ${fallback}`)
-  }
-  const cfg = typeof raw === 'string' ? { model: raw } : (isSetting ? raw : {})
-  const asked = normalizeModel(cfg.model)
-  const allowed = ALLOWED_MODELS.includes(asked)
-  const model = allowed ? asked : fallback
-  if (!allowed && cfg.model != null) {
-    warnOnce(`${stage}:model`, `${stage}: model ${JSON.stringify(cfg.model)} is not allowed, running ${fallback}`)
-  }
+  const { model, effort } = models[stage]
   const opts = { label, phase, schema, model }
-  if (cfg.effort !== undefined && cfg.effort !== null) {
-    const shown = JSON.stringify(cfg.effort)
-    const level = normalizeEffort(cfg.effort)
-    let dropped = null
-    if (!allowed) dropped = cfg.model == null ? 'no model was named' : 'it came with a model that is not allowed'
-    else if (level === null) dropped = `it is not one of ${EFFORT_LEVELS.join(', ')}`
-    else if (model === 'haiku') dropped = 'haiku takes no effort override'
-    if (dropped) warnOnce(`${stage}:effort`, `${stage}: effort ${shown} dropped, ${dropped}`)
-    else opts.effort = level
-  }
+  if (typeof effort === 'string') opts.effort = effort
   return opts
 }
 
@@ -101,6 +67,10 @@ if (!units.length) {
 }
 if (!worker || !verifier) {
   throw new Error('args.worker and args.verifier are required (the ## Worker and ## Verifier sections of spec.md)')
+}
+const refused = refusal()
+if (refused) {
+  throw new Error(`${refused}. Run estimate.py load-config --dir <checkpoint> --or-default and pass its output as args.models.`)
 }
 
 const ARTIFACT = {
@@ -186,7 +156,7 @@ const runUnit = async (unit) => {
 
 const describe = (stage) => {
   const o = stageOpts(stage, '', '', null)
-  return o.effort ? `${o.model} (effort ${o.effort})` : o.model
+  return o.effort === undefined ? o.model : `${o.model} (effort ${o.effort})`
 }
 log(`${units.length} pending units, up to ${maxAttempts} attempts each. ` +
     `Writer: ${describe('worker')}. Verifier: ${describe('verifier')}.`)

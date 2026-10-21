@@ -100,6 +100,22 @@ looks good returns yes every time.
    stall and do not silently downgrade. Run the default (Haiku writer, Opus
    verifier), and say in your final message that the gate was skipped and why.
 
+   Whichever way the models were settled, get the ones to run from
+   `load-config` with `--or-default`. It prints the saved choice after the
+   corrections above, or the default when no readable choice was saved. It
+   writes nothing in that case, so a later run still asks, and a damaged
+   record stays on disk for you to look at.
+
+   ```
+   python ...\scripts\estimate.py load-config --dir <checkpoint> --or-default
+   ```
+
+   Pass its `worker` and `verifier` to the workflow as `models`. `estimate.py`
+   is the only place the model and effort rules live. `batch.js` runs each
+   stage's model and effort as given. When any unit is pending it refuses to
+   start if `models` is missing, a stage names anything but `opus` or `haiku`,
+   or an effort is on Haiku or is not plain lowercase letters.
+
    Two things the menu encodes that are easy to get wrong:
 
    - **A model downgrade cuts price per token, not token count.** Price the
@@ -123,7 +139,7 @@ looks good returns yes every time.
        checkpointDir: "<abs path>",
        statePath: "${CLAUDE_PLUGIN_ROOT}/skills/batch-run/scripts/state.py",
        maxAttempts: 2,
-       models: { worker: {...}, verifier: {...} }   // from step 4's config
+       models: { worker: {...}, verifier: {...} }   // from load-config --or-default
      }
    })
    ```
@@ -197,9 +213,9 @@ table of Claude Code 2.1.296:
   price table lists both at $5 / $25, so on those two the Opus share of each
   figure is 80% of the real price. That table was not checked against
   Anthropic's price page. The binary's model catalog lists no `xhigh` effort
-  for Opus 4.6. The menu only ever sets `low`, but `load-config` and
-  `batch.js` keep a hand-set `xhigh` or `max` on Opus and pass it through
-  after trimming and lowercasing.
+  for Opus 4.6. The menu only ever sets `low`, but `load-config` keeps a
+  hand-set `xhigh` or `max` on Opus after trimming and lowercasing it, and
+  `batch.js` passes it through.
 
 The same binary also carries a second alias table. It maps `haiku` to Haiku 4.5
 on every provider, and `opus` to Opus 5 everywhere except Foundry (Opus 4.6)
@@ -212,9 +228,9 @@ menu's figure. Whether workflow agents run in fast mode is unverified.
 
 Haiku 5.5 takes an `effort` level and Haiku 4.5 does not. Nothing in this skill
 can tell which of the two the alias will reach, so `estimate.py` refuses to
-build an option that pairs Haiku with an effort override, `load-config` drops
-one, and `batch.js` drops one on a Haiku stage and logs it rather than passing
-it through.
+build an option that pairs Haiku with an effort override, and `load-config`
+drops one. `batch.js` refuses one too. It does not check which levels are
+valid, which is why its models must come from `load-config`.
 
 ## Failure modes worth knowing
 
@@ -247,7 +263,7 @@ it through.
 - `scripts/estimate.py` - the cost projection, the model menu and the saved choice.
 - `tests/test_state.py` - the checkpoint store, mostly simulated interruptions.
 - `tests/test_estimate.py` - the projection, the menu and the saved choice.
-- `tests/test_batch_js.py` - the model and effort rules in `batch.js`, run under
-  node; skipped when node is not on PATH.
+- `tests/test_batch_js.py` - the model guard in `batch.js` and its contract with
+  `load-config --or-default`, run under node; skipped when node is not on PATH.
 - Run the tests with `python -m pytest tests/ -q` from the skill dir.
 - `examples/` - a runnable units and spec pair.

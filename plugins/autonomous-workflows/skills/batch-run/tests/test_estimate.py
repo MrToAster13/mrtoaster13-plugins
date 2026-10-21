@@ -251,7 +251,52 @@ def test_a_mangled_config_reads_as_no_choice(tmp_path):
     cdir.mkdir()
     (cdir / estimate.CONFIG_NAME).write_text('{"choice": "haiku-b', encoding="utf-8")
 
-    assert estimate.load_config(cdir) is None  # falls back to the Haiku-writer, Opus-verifier default
+    assert estimate.load_config(cdir) is None
+    # The run itself gets the Haiku-writer, Opus-verifier default from or_default.
+    assert estimate.load_config(cdir, or_default=True) == estimate.default_config()
+
+
+def test_or_default_returns_the_default_record_and_writes_nothing(tmp_path):
+    cdir = tmp_path / "checkpoint"
+    config = estimate.load_config(cdir, or_default=True)
+    assert config == {"choice": estimate.DEFAULT_CHOICE,
+                      "worker": {"model": estimate.STAGE_DEFAULTS["worker"]},
+                      "verifier": {"model": estimate.STAGE_DEFAULTS["verifier"]}}
+    # Nothing saved, so the next run still asks.
+    assert not (cdir / estimate.CONFIG_NAME).exists()
+    assert estimate.load_config(cdir) is None
+
+
+@pytest.mark.parametrize("body", ["{not json", "[]", '{"worker": {"model": "opus"}}'])
+def test_or_default_covers_an_unreadable_record(tmp_path, body):
+    cdir = tmp_path / "checkpoint"
+    cdir.mkdir()
+    (cdir / estimate.CONFIG_NAME).write_text(body, encoding="utf-8")
+    assert estimate.load_config(cdir) is None
+    assert estimate.load_config(cdir, or_default=True) == estimate.default_config()
+    # The bad file is left for the person to look at.
+    assert (cdir / estimate.CONFIG_NAME).read_text(encoding="utf-8") == body
+
+
+def test_or_default_still_returns_a_saved_choice(tmp_path):
+    cdir = tmp_path / "checkpoint"
+    estimate.save_config(cdir, "opus-both", estimate.project(make_units(3, tmp_path), SPEC)["options"])
+    assert estimate.load_config(cdir, or_default=True)["choice"] == "opus-both"
+
+
+def test_each_call_gets_its_own_default_record():
+    first = estimate.default_config()
+    first["worker"]["model"] = "opus"
+    assert estimate.default_config()["worker"] == {"model": "haiku"}
+    assert estimate.MENU[0]["worker"] == {"model": "haiku"}
+
+
+def test_cli_load_config_or_default(tmp_path, capsys):
+    cdir = tmp_path / "checkpoint"
+    assert estimate._main(["load-config", "--dir", str(cdir)]) == 1
+    assert capsys.readouterr().out.strip() == "none"
+    assert estimate._main(["load-config", "--dir", str(cdir), "--or-default"]) == 0
+    assert json.loads(capsys.readouterr().out) == estimate.default_config()
 
 
 def test_an_unknown_choice_is_rejected(tmp_path):
@@ -565,7 +610,7 @@ def test_a_tidy_with_nothing_to_report_is_still_written_back(tmp_path, extra):
     assert on_disk == clean
 
 
-def test_an_effort_with_no_model_gives_the_reason_batch_js_gives(tmp_path):
+def test_an_effort_with_no_model_is_dropped_with_its_reason(tmp_path):
     cdir = tmp_path / "checkpoint"
     write_config(cdir, {"choice": "haiku-write-opus-verify", "worker": {"model": "haiku"},
                         "verifier": {"effort": "low"}})
