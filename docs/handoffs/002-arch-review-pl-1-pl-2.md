@@ -21,13 +21,13 @@ Elijah approved two fixes from the 2026-10-21 architecture review (`C:\Users\Eli
 
 ## Next (in order)
 1. Done: git shows PR #7 merged as 0d691c1.
-2. Follow-up, not started: unit ids that differ only in case, such as `Alpha` and `alpha`, share one record file on NTFS. A probe recorded `Alpha` as verified, then ran units `[alpha, Alpha]`: `todo` returned nothing and `report` counted 2 verified, though `alpha` never ran. The `slug_for` docstring now says so. One fix tags any slug with an uppercase letter. That changes the slug of every such id, so their finished units would be redone. Another fix has `read_record` check the stored `unit_id`. This needs a decision before anyone builds it.
+2. Done in PR #9 (merge 017ff50), which does both fixes below. Handoff 003 has the details. Original note: unit ids that differ only in case, such as `Alpha` and `alpha`, share one record file on NTFS. A probe recorded `Alpha` as verified, then ran units `[alpha, Alpha]`: `todo` returned nothing and `report` counted 2 verified, though `alpha` never ran. The `slug_for` docstring now says so. One fix tags any slug with an uppercase letter. That changes the slug of every such id, so their finished units would be redone. Another fix has `read_record` check the stored `unit_id`. This needs a decision before anyone builds it.
 3. Follow-up, not started: a tagged slug can equal another id's plain slug. `slug_for("batch-config.1dd12472")` equals `slug_for("batch-config")`, and `"a_b.<hash>"` can equal the tag of `"a b"`. Both ids would have to be in one units.json.
 4. Follow-up, not started: estimate.py still calls `state._at_least` and `state._retry_while_in_use`. Neither touches the config file, so pl-2 left them alone.
 
 ## Key decisions
 - batch.js does not check which effort levels are valid. That list lives in estimate.py only. A hand-built `{"model": "opus", "effort": "banana"}` reaches agent(). SKILL.md says the models must come from load-config.
-- The canonical batch-run copy is this repo's `plugins/autonomous-workflows/skills/batch-run`. A second, older copy lives at `C:\Users\Elijah\.claude\skills\batch-run` in claude-config (last commit 8949d21, 2026-10-19). It still has the built-in batch.js defaults, no `--or-default` and the old config handling, and this work did not change it. That copy is self-contained, so nothing in it breaks, and nothing in this repo imports from it. Syncing it waits on Elijah's ownership answer, question (a) in handoff 001.
+- This work changed only this repo's `plugins/autonomous-workflows/skills/batch-run`. A second copy lives at `C:\Users\Elijah\.claude\skills\batch-run` in claude-config (last commit 8949d21, 2026-10-19). It still has the built-in batch.js defaults, no `--or-default` and the old config handling, and this work did not change it. That copy is self-contained, so nothing in it breaks, and nothing in this repo imports from it. Syncing it waits on Elijah's ownership answer, question (a) in handoff 001. Neither copy is canonical: they diverged both ways, and the `~/.claude` copy has hardening the plugin lacks. See the (a) design in handoff 003.
 - pl-2 fixed only the collision with the config file and left the case collision between two unit ids (Next item 2) alone. Fixing that one redoes finished work, which goes beyond pl-2.
 
 ## Relevant files
@@ -37,6 +37,6 @@ Elijah approved two fixes from the 2026-10-21 architecture review (`C:\Users\Eli
 - `plugins/autonomous-workflows/skills/batch-run/tests/test_state.py`, `tests/test_estimate.py`, `tests/test_batch_js.py`.
 
 ## Gotchas / open questions
-- Leave the untracked `fuzz9.out` in the repo root alone. Its deletion waits on Elijah, question (d) in handoff 001.
-- Elijah's answers to questions (a) through (f) in handoff 001, and to (g) and (h) asked in chat after it, are still pending.
+- Leave the untracked `fuzz9.out` in the repo root alone. Its deletion waits on Elijah, question (d) in handoff 001. Later deleted after a backup; see handoff 003 (d).
+- Elijah's answers to questions (a) through (f) in handoff 001, and to (g) and (h) asked in chat after it, were pending when this was written. Handoff 003 records the answers.
 - A pytest parametrize value of 100,000 bytes becomes the test id, and here that test errored before it ran. Short `ids` fixed it.
