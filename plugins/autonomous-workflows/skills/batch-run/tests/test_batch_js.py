@@ -198,7 +198,7 @@ def test_load_config_output_runs_as_is(tmp_path, saved, worker, verifier):
     cdir = tmp_path / "checkpoint"
     if saved is not None:
         cdir.mkdir()
-        (cdir / estimate.CONFIG_NAME).write_text(json.dumps(saved), encoding="utf-8")
+        estimate.state.config_path(cdir).write_text(json.dumps(saved), encoding="utf-8")
     config = _load_config_cli(cdir)
     calls = run_whole_workflow(config)["calls"]
     assert len(calls) == 2 * 2 * 2, calls

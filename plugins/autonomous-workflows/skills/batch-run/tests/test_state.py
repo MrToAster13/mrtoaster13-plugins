@@ -542,3 +542,42 @@ def test_reason_does_not_leak_across_a_retry(tmp_path):
     rec = state.read_record(str(tmp_path), "alpha")
     assert rec["status"] == "written"
     assert "reason" not in rec
+
+
+@pytest.mark.parametrize("unit_id", ["batch-config", "Batch-Config", "BATCH-CONFIG"])
+def test_no_unit_record_lands_on_the_config_file(tmp_path, unit_id):
+    cdir = tmp_path / "checkpoint"
+    assert state.record_path(cdir, unit_id).name.lower() != state.CONFIG_NAME
+    state.write_config(cdir, {"choice": "kept"})
+    state.record(cdir, unit_id, "verified")
+    assert state.read_config(cdir) == {"choice": "kept"}
+    assert state.read_record(cdir, unit_id)["status"] == "verified"
+
+
+@pytest.mark.parametrize("unit_id", ["batch-configs", "batch-config.json", "my-batch-config"])
+def test_ids_near_the_config_name_keep_their_plain_slug(unit_id):
+    assert state.slug_for(unit_id) == unit_id
+
+
+def test_the_config_reads_back_what_was_written(tmp_path):
+    cdir = tmp_path / "checkpoint"
+    assert state.read_config(cdir) is None
+    state.write_config(cdir, {"worker": {"model": "haiku"}})
+    assert state.read_config(cdir) == {"worker": {"model": "haiku"}}
+    assert sorted(p.name for p in cdir.iterdir()) == [state.CONFIG_NAME]
+
+
+@pytest.mark.parametrize("body", [b'{"worker"', b"\xff\xfe", b"[" * 100_000],
+                         ids=["truncated", "not-utf8", "too-deep"])
+def test_an_unreadable_config_reads_as_none(tmp_path, body):
+    cdir = tmp_path / "checkpoint"
+    cdir.mkdir()
+    state.config_path(cdir).write_bytes(body)
+    assert state.read_config(cdir) is None
+
+
+def test_a_config_with_a_byte_order_mark_reads(tmp_path):
+    cdir = tmp_path / "checkpoint"
+    cdir.mkdir()
+    state.config_path(cdir).write_bytes(b"\xef\xbb\xbf" + b'{"choice": "x"}')
+    assert state.read_config(cdir) == {"choice": "x"}

@@ -15,6 +15,10 @@ The invariant this module exists to enforce:
 That is why a killed session needs no error handler. Failure is the absence of
 a success record, not an event someone has to catch on the way down.
 
+The directory also holds batch-config.json, the models the run committed to.
+This module owns that file's name, reads and writes, and keeps every unit
+record off it. estimate.py owns what goes in it.
+
 CLI:
     python state.py todo    --units units.json --dir checkpoint [--limit N]
     python state.py record  --dir checkpoint --id ID --status verified [...]
@@ -44,6 +48,8 @@ SHARING_RETRY_DELAYS = (0.01, 0.02, 0.04, 0.08)
 
 _UNSAFE = re.compile(r"[^A-Za-z0-9._-]")
 _MAX_SLUG = 80
+CONFIG_NAME = "batch-config.json"
+_CONFIG_STEM = CONFIG_NAME[:-len(".json")]
 
 
 def now_iso():
@@ -55,12 +61,19 @@ def slug_for(unit_id):
 
     Ids come from user data and may contain slashes, spaces, or path tricks.
     Anything that is not already filename-safe gets sanitized and tagged with a
-    hash of the original, so two different ids can never land on one file.
+    hash of the original, so two ids that sanitize alike still get different
+    files. Ids that differ only in case, such as Alpha and alpha, do share one
+    file on a case-insensitive filesystem such as NTFS.
+    An id that would land on the config file, in any case, is tagged the same
+    way, so a unit record and the saved models never overwrite each other on
+    a case-insensitive filesystem. A unit with such an id recorded before this
+    rule is pending again and gets redone.
     """
     if not isinstance(unit_id, str) or not unit_id.strip():
         raise ValueError("unit id must be a non-empty string")
     safe = _UNSAFE.sub("_", unit_id)
-    if safe != unit_id or safe in (".", "..") or len(safe) > _MAX_SLUG:
+    if (safe != unit_id or safe in (".", "..") or len(safe) > _MAX_SLUG
+            or safe.lower() == _CONFIG_STEM):
         digest = hashlib.sha1(unit_id.encode("utf-8")).hexdigest()[:8]
         safe = "{}.{}".format(safe[:_MAX_SLUG], digest)
     return safe
@@ -72,6 +85,10 @@ def record_path(checkpoint_dir, unit_id):
 
 def lock_path(checkpoint_dir, unit_id):
     return Path(checkpoint_dir) / "{}.lock".format(slug_for(unit_id))
+
+
+def config_path(checkpoint_dir):
+    return Path(checkpoint_dir) / CONFIG_NAME
 
 
 def _retry_while_in_use(action):
@@ -122,6 +139,21 @@ def _atomic_write_json(path, payload):
         except OSError:
             pass
         raise
+
+
+def read_config(checkpoint_dir):
+    """Return the saved models record as parsed, or None if it is absent or
+    does not parse. Whether what it says is usable is for estimate.py to
+    decide."""
+    try:
+        return _read_json(config_path(checkpoint_dir))
+    except (OSError, ValueError, RecursionError):
+        return None
+
+
+def write_config(checkpoint_dir, payload):
+    """Write the saved models record atomically. Raises OSError on failure."""
+    _atomic_write_json(config_path(checkpoint_dir), payload)
 
 
 def read_record(checkpoint_dir, unit_id):
