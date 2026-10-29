@@ -5,7 +5,7 @@ Status: paused. The batch-run port needs a ticket with acceptance criteria befor
 ## Goal
 Elijah answered "dealers choice" to the two questions at the end of handoff 003. This session picked:
 - (a) a1 with "port yes". claude-config owns the six shared skills. This repo keeps a hand-ported public copy, and batch-run gets ported in both directions now.
-- ELI-388: "388 branch". Use Mini's branch `origin/eli-388-sell-ai-setup` (5ae356c) in the Portfolio repo. Do not merge it until Elijah approves the copy.
+- ELI-388: "388 branch". Use the existing branch `origin/eli-388-sell-ai-setup` (5ae356c) in the Portfolio repo. Do not merge it until Elijah approves the copy.
 
 ## Rule change mid-session (2026-10-21)
 Elijah replaced the audit-then-push loop:
