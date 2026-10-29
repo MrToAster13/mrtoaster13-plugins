@@ -4,7 +4,9 @@ One small file per work unit under a checkpoint directory, written atomically
 (temp file plus `os.replace`). Parallel workers never touch the same file, so
 the record path needs no locking. On Windows `os.replace` and `open` fail with
 PermissionError while another process holds the file open, so a write or read
-that hits one retries a few times before giving up.
+that hits one retries a few times before giving up. Every JSON file is read
+strictly: NaN, Infinity and numbers too large for a float are errors, since
+they are not JSON.
 
 The invariant this module exists to enforce:
 
@@ -32,6 +34,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
 import os
 import re
 import sys
@@ -75,6 +78,10 @@ def slug_for(unit_id):
     for it no longer holds the unit. On a filesystem that ignores case, that
     old lock still blocks the unit's lowercase twin until its lease expires,
     and read_record ignores the old record because its unit_id differs.
+
+    This rule must match slug_for in every copy of batch-run, so a batch
+    started under one copy resumes under another. tests/test_cross_copy.py
+    checks the names against literals.
     """
     if not isinstance(unit_id, str) or not unit_id.strip():
         raise ValueError("unit id must be a non-empty string")
@@ -108,11 +115,25 @@ def _retry_while_in_use(action):
     return action()
 
 
+def _no_constant(name):
+    """Reject NaN and Infinity, which json reads by default but is not JSON."""
+    raise ValueError("not JSON: {}".format(name))
+
+
+def _finite_float(text):
+    """Reject a number too large for a float, such as 1e999, which json reads as infinity."""
+    value = float(text)
+    if not math.isfinite(value):
+        raise ValueError("number out of range: {}".format(text))
+    return value
+
+
 def _read_json(path):
-    """Parse a JSON file. utf-8-sig also reads a file saved with a byte order mark."""
+    """Parse a JSON file strictly. utf-8-sig also reads a file saved with a
+    byte order mark."""
     def read():
         with open(path, "r", encoding="utf-8-sig") as fh:
-            return json.load(fh)
+            return json.load(fh, parse_constant=_no_constant, parse_float=_finite_float)
     return _retry_while_in_use(read)
 
 
@@ -217,20 +238,65 @@ def record(checkpoint_dir, unit_id, status, artifact=None, reason=None, worker=N
     return payload
 
 
+# Lists and dicts in a units file may nest this deep, counting the top-level list.
+_MAX_UNITS_DEPTH = 500
+
+
+def _nesting_depth(value, limit):
+    """Return how deep lists and dicts nest in value, stopping once past limit.
+
+    The walk uses its own stack, so a deep value cannot raise RecursionError.
+    """
+    deepest = 0
+    stack = [(value, 1)]
+    while stack:
+        item, depth = stack.pop()
+        if isinstance(item, dict):
+            children = item.values()
+        elif isinstance(item, list):
+            children = item
+        else:
+            continue
+        if depth > deepest:
+            deepest = depth
+            if deepest > limit:
+                return deepest
+        stack.extend((child, depth + 1) for child in children)
+    return deepest
+
+
 def load_units(units_path):
     try:
         units = _read_json(units_path)
     except RecursionError:
-        raise ValueError("units file is nested too deeply to read") from None
+        raise ValueError("units file is nested too deeply to parse") from None
+    # Some Python builds parse 100000 nested brackets without RecursionError,
+    # so the depth check cannot rely on the parser raising it.
+    if _nesting_depth(units, _MAX_UNITS_DEPTH) > _MAX_UNITS_DEPTH:
+        raise ValueError("units file is nested too deeply to parse")
     if not isinstance(units, list):
         raise ValueError("units file must contain a JSON list")
     seen = set()
+    files = {}
     for unit in units:
         if not isinstance(unit, dict) or "id" not in unit:
             raise ValueError("every unit needs an 'id' field: {!r}".format(unit))
+        if not isinstance(unit["id"], str) or not unit["id"].strip():
+            # slug_for turns the id into a file name and takes only a non-empty string.
+            raise ValueError("unit id must be a non-empty string: {!r}".format(unit["id"]))
         if unit["id"] in seen:
             raise ValueError("duplicate unit id: {!r}".format(unit["id"]))
         seen.add(unit["id"])
+        # Slugs are ASCII, so lower() matches how a case-insensitive file system
+        # compares the names. Ids that differ only in case get different
+        # slugs, so this catches an id equal to another id's tagged slug.
+        name = slug_for(unit["id"]).lower()
+        if name in files:
+            raise ValueError(
+                "unit ids {!r} and {!r} would share the checkpoint file {}.json on a case-insensitive "
+                "file system such as the Windows or macOS default, so the script rejects the pair on "
+                "every system; rename one".format(files[name], unit["id"], name))
+        files[name] = unit["id"]
     return units
 
 
@@ -269,6 +335,94 @@ def report(checkpoint_dir, units):
     }
 
 
+# A steal guard this far off the clock, either way, was left by a stealer
+# that died. Stealing takes milliseconds, so a live one is never this old.
+STEAL_GUARD_SECONDS = 60
+
+
+def _identity(st):
+    return (st.st_dev, st.st_ino, st.st_mtime_ns, st.st_size)
+
+
+def _guard_mark(guard):
+    """What identifies one guard file: its stat identity and its token, or None."""
+    try:
+        st = os.stat(str(guard))
+        with open(str(guard), "r", encoding="ascii", errors="replace") as fh:
+            token = fh.read(64)
+    except OSError:
+        return None
+    return (_identity(st), token)
+
+
+def _unlink(path):
+    """Delete path, retrying while Windows reports it in use. True if it went."""
+    try:
+        _retry_while_in_use(lambda: os.unlink(str(path)))
+    except OSError:
+        return False
+    return True
+
+
+def _unlink_guard_if_same(guard, mark):
+    """Delete the guard only if it is still the one mark describes.
+
+    Another caller may have cleared it and made a fresh one meanwhile, and
+    deleting that one would let two stealers run at once.
+    """
+    if mark is None or _guard_mark(guard) != mark:
+        return
+    _unlink(guard)
+
+
+def _remove_if_unchanged(path, seen):
+    """Delete the lock at path if it is still the file whose identity is seen.
+
+    Returns True when the lock is gone, so the caller may try to create it.
+    Only the caller holding the guard file may delete, so a caller whose
+    judgment is out of date cannot delete a lock someone stole meanwhile.
+    """
+    guard = path.with_name(path.name + ".steal")
+    try:
+        fd = _retry_while_in_use(
+            lambda: os.open(str(guard), os.O_CREAT | os.O_EXCL | os.O_WRONLY))
+    except FileExistsError:
+        mark = _guard_mark(guard)
+        try:
+            if mark is not None and abs(time.time() - os.path.getmtime(str(guard))) >= STEAL_GUARD_SECONDS:
+                _unlink_guard_if_same(guard, mark)
+        except OSError:
+            pass
+        return False
+    except OSError:
+        return False
+    # A random token, so a fresh guard that reuses this one's inode and file
+    # time still reads as a different guard.
+    token = os.urandom(8).hex()
+    try:
+        os.write(fd, token.encode("ascii"))
+        mine = (_identity(os.fstat(fd)), token)
+    except OSError:
+        mine = None
+    finally:
+        os.close(fd)
+    if mine is None:
+        _unlink_guard_if_same(guard, _guard_mark(guard))
+        return False
+    try:
+        try:
+            now = _identity(os.stat(str(path)))
+        except FileNotFoundError:
+            return True
+        except OSError:
+            return False
+        if now != seen:
+            return False
+        return _unlink(path)
+    finally:
+        _unlink_guard_if_same(guard, mine)
+
+
 def claim(checkpoint_dir, unit_id, lease_seconds=DEFAULT_LEASE_SECONDS, owner=None):
     """Take an exclusive lease on a unit. Returns True if this caller won it.
 
@@ -281,10 +435,19 @@ def claim(checkpoint_dir, unit_id, lease_seconds=DEFAULT_LEASE_SECONDS, owner=No
     hold a unit forever. A file time a full lease or more ahead of the
     clock is bogus and counts as stale, so a shorter lease gives up such a
     lock sooner. A lock whose time cannot be read is left
-    alone, so the caller loses unless the lock is already gone. Two callers
-    that judge the same lock stale at the same moment can both win; the
-    lease length does not prevent that. Keep the lease above a unit's run
-    time so a live holder is not judged stale.
+    alone, so the caller loses unless the lock is already gone.
+
+    To steal, a caller first creates a guard file next to the lock with
+    O_EXCL, then deletes the lock only if it is still the file it judged
+    stale (same inode, file time and size). So two callers that judge the
+    same lock stale at the same moment cannot both win: the second finds the
+    guard, or finds the first one's fresh lock. A guard STEAL_GUARD_SECONDS
+    or more off the clock belongs to a stealer that died; the caller removes
+    it and loses that call, and it removes a guard only if the guard's
+    identity and token still match what it read. Keep the lease above a
+    unit's run time so a live holder is not judged stale. A holder that runs
+    past its lease and then releases can let a stealer and a fresh claimer
+    both win, since release does not take the guard.
 
     Creating the lock retries a few times while Windows reports it in use,
     then raises PermissionError. A directory the caller cannot write to
@@ -304,6 +467,7 @@ def claim(checkpoint_dir, unit_id, lease_seconds=DEFAULT_LEASE_SECONDS, owner=No
         fd = create()
     except FileExistsError:
         try:
+            seen = _identity(os.stat(str(path)))
             age = time.time() - os.path.getmtime(str(path))
         except OSError:
             # The lock vanished or is being deleted. Its age is unknown, so
@@ -314,10 +478,8 @@ def claim(checkpoint_dir, unit_id, lease_seconds=DEFAULT_LEASE_SECONDS, owner=No
             # reads a little ahead of the clock.
             if lease_seconds > 0 and -lease_seconds < age < lease_seconds:
                 return False
-            try:
-                os.unlink(str(path))
-            except OSError:
-                pass
+            if not _remove_if_unchanged(path, seen):
+                return False
         try:
             fd = create()
         except FileExistsError:
@@ -330,11 +492,9 @@ def claim(checkpoint_dir, unit_id, lease_seconds=DEFAULT_LEASE_SECONDS, owner=No
 def release(checkpoint_dir, unit_id):
     """Drop a unit's lease. Returns True if this call removed the lock file,
     and False if there was no lock file or it could not be removed."""
-    try:
-        os.unlink(str(lock_path(checkpoint_dir, unit_id)))
-        return True
-    except OSError:
-        return False
+    # _unlink retries while Windows reports the lock in use, which a virus
+    # scanner can cause for a moment.
+    return _unlink(lock_path(checkpoint_dir, unit_id))
 
 
 def _main(argv=None):
@@ -376,15 +536,22 @@ def _main(argv=None):
 
     args = parser.parse_args(argv)
 
+    if args.command in ("todo", "report"):
+        try:
+            units = load_units(args.units)
+        except (OSError, ValueError) as exc:
+            # A units file that is missing or does not parse: say so, no traceback.
+            print("error: {}".format(exc), file=sys.stderr)
+            return 1
     if args.command == "todo":
-        print(json.dumps(todo(args.dir, load_units(args.units), args.limit), indent=2))
+        print(json.dumps(todo(args.dir, units, args.limit), indent=2))
         return 0
     if args.command == "record":
         print(json.dumps(record(args.dir, args.id, args.status, args.artifact,
                                 args.reason, args.worker), indent=2))
         return 0
     if args.command == "report":
-        summary = report(args.dir, load_units(args.units))
+        summary = report(args.dir, units)
         print(json.dumps(summary, indent=2))
         return 0 if (summary["complete"] or not args.strict) else 1
     if args.command == "claim":

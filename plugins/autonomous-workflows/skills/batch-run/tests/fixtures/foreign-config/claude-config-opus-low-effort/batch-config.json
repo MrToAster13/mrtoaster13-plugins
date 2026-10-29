@@ -1,0 +1,11 @@
+{
+  "choice": "opus-low-effort",
+  "verifier": {
+    "effort": "low",
+    "model": "opus"
+  },
+  "worker": {
+    "effort": "low",
+    "model": "opus"
+  }
+}

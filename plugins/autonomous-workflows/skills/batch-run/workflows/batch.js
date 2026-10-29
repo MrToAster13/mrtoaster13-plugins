@@ -17,10 +17,12 @@ export const meta = {
 // effort it cannot pass, and returns the defaults (Haiku writer, Opus
 // verifier) when no readable choice was saved. This script does not correct
 // anything. Before any agent runs it refuses a stage that is not an object,
-// names a model other than opus or haiku, or carries an effort load-config
-// would never emit (one on haiku, or one that is not plain lowercase
-// letters), so a stray 'sonnet' never reaches agent() and the session model
-// is never inherited. Which levels are valid stays in estimate.py.
+// names a model other than opus or haiku, puts the verifier on anything but
+// opus, or carries an effort load-config would never emit (one on haiku, or
+// one that is not plain lowercase letters), so a stray 'sonnet' never reaches
+// agent() and the session model is never inherited. The verifier is an
+// adversarial review, which runs on Opus. Which levels are valid stays in
+// estimate.py.
 const {
   units = [],
   worker = '',
@@ -43,6 +45,9 @@ const refusal = () => {
     if (!isObject(cfg)) return `models.${stage} is ${JSON.stringify(cfg)}, not a model setting`
     if (!ALLOWED_MODELS.includes(cfg.model)) {
       return `models.${stage}.model is ${JSON.stringify(cfg.model)}, not one of ${ALLOWED_MODELS.join(', ')}`
+    }
+    if (stage === 'verifier' && cfg.model !== 'opus') {
+      return `models.verifier.model is ${JSON.stringify(cfg.model)}, but the verifier runs on opus only`
     }
     if (cfg.effort === undefined || cfg.effort === null) continue
     if (typeof cfg.effort !== 'string' || !/^[a-z]+$/.test(cfg.effort)) {

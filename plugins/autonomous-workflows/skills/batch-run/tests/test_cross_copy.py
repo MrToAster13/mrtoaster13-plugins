@@ -54,6 +54,39 @@ def test_a_batch_written_by_the_other_copy_resumes_here(tmp_path):
         assert state.read_record(str(cdir), unit_id)["status"] == "verified"
 
 
+FOREIGN_CONFIGS = HERE / "fixtures" / "foreign-config"
+
+
+def _load_foreign_config(tmp_path, name):
+    # load_config may write the corrected record back, so load a copy.
+    import estimate
+
+    cdir = tmp_path / "checkpoint"
+    shutil.copytree(str(FOREIGN_CONFIGS / name), str(cdir))
+    return estimate.load_config(str(cdir))
+
+
+def test_a_plugin_haiku_both_config_resumes_on_an_opus_verifier(tmp_path):
+    # The plugin's pre-merge menu had haiku-both, a Haiku verifier.
+    config = _load_foreign_config(tmp_path, "plugin-haiku-both")
+    assert config["choice"] == "haiku-write-opus-verify"
+    assert config["worker"] == {"model": "haiku"}
+    assert config["verifier"] == {"model": "opus"}
+    assert config["remapped"] == [
+        "verifier: haiku -> opus",
+        "choice: haiku-both -> haiku-write-opus-verify",
+    ]
+
+
+def test_a_claude_config_opus_low_effort_config_resumes_unchanged(tmp_path):
+    config = _load_foreign_config(tmp_path, "claude-config-opus-low-effort")
+    assert config == {
+        "choice": "opus-low-effort",
+        "worker": {"model": "opus", "effort": "low"},
+        "verifier": {"model": "opus", "effort": "low"},
+    }
+
+
 def test_the_foreign_fixture_holds_one_file_per_recorded_unit():
     names = sorted(p.name for p in FOREIGN.iterdir())
     assert names == sorted([

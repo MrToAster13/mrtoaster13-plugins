@@ -19,6 +19,7 @@ FACTORY = Path(__file__).resolve().parents[1]
 PLUGIN = FACTORY.parents[1]
 REPO = PLUGIN.parents[1]
 PREFLIGHT = FACTORY / "scripts" / "preflight.py"
+IN_PLUGIN = (PLUGIN / ".claude-plugin" / "plugin.json").is_file()
 
 sys.path.insert(0, str(FACTORY / "scripts"))
 
@@ -140,6 +141,7 @@ def test_vault_comes_from_the_flag_or_the_environment(profile, tmp_path):
     assert run(home, project, bindir, vault_env=other).returncode == 0
 
 
+@pytest.mark.skipif(not IN_PLUGIN, reason="the preflight step is plugin-only text")
 def test_skill_md_runs_the_preflight_before_binding():
     text = (FACTORY / "SKILL.md").read_text(encoding="utf-8")
     phase0 = text.index("## Phase 0")
@@ -148,6 +150,7 @@ def test_skill_md_runs_the_preflight_before_binding():
     assert check != -1 and check < repo_step
 
 
+@pytest.mark.skipif(not IN_PLUGIN, reason="the READMEs exist only in the plugin repo's layout")
 @pytest.mark.parametrize("readme", [REPO / "README.md", PLUGIN / "README.md"])
 def test_readmes_name_every_prerequisite_and_its_source(readme):
     text = readme.read_text(encoding="utf-8")
