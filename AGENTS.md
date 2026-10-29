@@ -7,7 +7,8 @@ Public Claude Code plugin marketplace. Two plugins live under `plugins/`:
 
 ## Setup
 
-Python 3.8 or newer with pytest, and node 22 for the batch.js tests:
+Python 3 with pytest (CI runs 3.12; older versions are untested), and node 22 for the
+batch.js tests:
 
 ```
 python -m venv .venv
