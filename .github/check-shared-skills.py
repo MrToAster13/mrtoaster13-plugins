@@ -4,7 +4,9 @@
 claude-config's bin/sync-shared-skills.py writes the shared skills into this
 repo and records each file's sha256 in .shared-skills.json at the repo root.
 This script, a copy that the sync also writes, checks the files against that
-record. Run it from the repo root. Exit 0 when every generated folder matches,
+record, and checks the executable bit of each file against the record's
+"executable" list. Windows has no x bit, so the mode check runs only on
+Linux and the Mac. Run it from the repo root. Exit 0 when every generated folder matches,
 exit 1 after listing each changed, missing or added file.
 
 To change a generated skill, edit it in claude-config/skills/, then rerun
@@ -14,6 +16,7 @@ Standard library only.
 
 import hashlib
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -32,6 +35,7 @@ def problems(repo):
         lock = json.loads((repo / LOCK).read_text(encoding="utf-8"))
         files = lock["files"]
         dirs = lock["dirs"]
+        executable = set(lock.get("executable", []))
     except (OSError, ValueError, KeyError, TypeError) as exc:
         return ["{} cannot be read: {}".format(LOCK, exc)]
     found = []
@@ -41,6 +45,8 @@ def problems(repo):
             found.append("missing: {}".format(rel))
         elif hashlib.sha256(path.read_bytes()).hexdigest() != digest:
             found.append("changed: {}".format(rel))
+        elif os.name != "nt" and bool(path.stat().st_mode & 0o111) != (rel in executable):
+            found.append("mode: {} should be {}".format(rel, "755" if rel in executable else "644"))
     for d in sorted(dirs):
         base = repo / d
         if not base.is_dir():
