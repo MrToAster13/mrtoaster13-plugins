@@ -1,0 +1,26 @@
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  pytest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      # test_batch_js.py runs batch.js under node and skips without it.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Install pytest
+        run: python -m pip install pytest
+      - name: Run the full suite
+        run: python -m pytest -q
