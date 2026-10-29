@@ -8,7 +8,7 @@ They run between human gates, not without them. You approve the plan; the agent 
 
 ### `/factory` — the unattended ticket loop
 
-Takes an approved spec and builds it into a working MVP without you in the room. It runs `to-spec → to-tickets → implement → code-review` on a loop, orchestrating from your main session so the context never fills: the orchestrator holds only a ledger and one line summaries, and every piece of real work happens in a subagent whose context dies with it.
+Takes an approved spec and builds it into a working MVP without you in the room. It runs `to-spec → to-tickets`, then builds each ticket with `tdd` and an adversary review, on a loop, orchestrating from your main session so the context never fills: the orchestrator holds only a ledger and one line summaries, and every piece of real work happens in a subagent whose context dies with it.
 
 The rule that makes it usable: **a blocker parks the ticket, it does not stop the run.** Anything reversible in an afternoon gets decided and logged. Anything that would waste work or ship something you did not agree to gets parked as a question, and everything not downstream of it keeps building. You are interrupted once, at the end, with every open question at the same time.
 
@@ -55,6 +55,25 @@ Green tests are the input, not the verdict. An adversarial sub-agent then hunts 
 Runs N similar work units (documents, resumes, migrations) through a writer agent and an independent verifier agent that never saw the writer's reasoning. Each unit's outcome is written to disk the moment it lands, so a session killed on limits loses only the units in flight, and a resume recomputes the todo list from the checkpoint instead of trusting memory.
 
 The rule: **report from disk, never from the workflow's return value.** Includes a cost estimator that prices the run in dollars and a model menu (downgrade the writer before the verifier; a cheap verifier waves through invented facts). Ships with a Python state machine and its tests.
+
+## Prerequisites for `/factory`
+
+`/factory` calls skills and tools this plugin does not ship. Its first step runs
+`skills/factory/scripts/preflight.py`, which stops the run and names whatever is
+missing. Install these first:
+
+| Needed | What factory uses it for | Where to get it |
+|---|---|---|
+| `setup-matt-pocock-skills` skill | writes `docs/agents/issue-tracker.md` and `domain.md` in the target repo | Matt Pocock's skills, [github.com/mattpocock/skills](https://github.com/mattpocock/skills): `claude plugin install mattpocock-skills@claude-plugins-official` |
+| `to-spec` skill | publishes the spec ticket | same |
+| `to-tickets` skill | breaks the spec into tickets | same |
+| `tdd` skill | the red, green loop each builder runs | same |
+| `ticket.py` | every ticket read and write, from `Tickets/_tools/ticket.py` in an Obsidian vault | Not published. It is the author's own vault tracker, so `/factory` runs only where such a vault exists. Point at it with `--vault PATH` or `FACTORY_VAULT`; the default is `~/obsidian-vault`. |
+| `git` | worktrees, branches and merges | [git-scm.com](https://git-scm.com) |
+| `gh` | the pull request, `gh auth status` | [cli.github.com](https://cli.github.com) |
+
+`/wayfinder`, from the same Matt Pocock set, is optional. factory only points you
+to it when the idea is not yet sharp enough to build.
 
 ## Install
 
