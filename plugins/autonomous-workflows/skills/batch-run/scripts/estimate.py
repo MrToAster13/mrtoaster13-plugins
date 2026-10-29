@@ -45,8 +45,13 @@ PRICES = {
               "effort": False},
 }
 
-# What a stage falls back to when a saved config names a model that is no
-# longer allowed, such as a checkpoint written before Sonnet was dropped.
+# The models each stage may run on. A verifier is an adversarial review, which
+# runs on Opus, so the menu has no Haiku verifier.
+STAGE_MODELS = {"worker": ("haiku", "opus"), "verifier": ("opus",)}
+
+# What a stage falls back to when a saved config names a model that stage may
+# not run on: a checkpoint written before Sonnet was dropped, or one that
+# chose the removed haiku-both option and so has a Haiku verifier.
 STAGE_DEFAULTS = {"worker": "haiku", "verifier": "opus"}
 
 # Model family words. A saved name maps to an alias only when exactly one of
@@ -70,9 +75,6 @@ MENU = [
     {"key": "opus-both", "label": "Opus writer, Opus verifier",
      "worker": {"model": "opus"}, "verifier": {"model": "opus"},
      "note": "strongest writer too, at the highest price"},
-    {"key": "haiku-both", "label": "Haiku writer, Haiku verifier",
-     "worker": {"model": "haiku"}, "verifier": {"model": "haiku"},
-     "note": "cheapest, and the weakest catch on invented facts"},
     {"key": "opus-low-effort", "label": "Opus both, low reasoning effort",
      "worker": {"model": "opus", "effort": "low"},
      "verifier": {"model": "opus", "effort": "low"},
@@ -174,6 +176,10 @@ def split_spec(spec_text):
 
 def project(units, spec_text, attempts=2, worker_out=DEFAULT_WORKER_OUT,
             verifier_out=DEFAULT_VERIFIER_OUT, ask_above=DEFAULT_ASK_ABOVE):
+    if attempts < 1:
+        raise ValueError("attempts must be at least 1, got {}".format(attempts))
+    if worker_out < 0 or verifier_out < 0:
+        raise ValueError("output token counts cannot be negative")
     sections = split_spec(spec_text)
     spec_in = {k: _tokens(v) for k, v in sections.items()}
     unit_payloads = [_payload_tokens(u) for u in units]
@@ -204,9 +210,14 @@ def project(units, spec_text, attempts=2, worker_out=DEFAULT_WORKER_OUT,
         return total
 
     options = json.loads(json.dumps(MENU))
-    baseline = cost("haiku", "opus")
-    for option in options:
-        option_cost = cost(option["worker"]["model"], option["verifier"]["model"])
+    try:
+        baseline = cost("haiku", "opus")
+        option_costs = [cost(option["worker"]["model"], option["verifier"]["model"])
+                        for option in options]
+    except OverflowError:
+        # A count such as 10**400 does not fit in a float.
+        raise ValueError("token counts too large to price") from None
+    for option, option_cost in zip(options, option_costs):
         option["cost_usd"] = round(option_cost, 2)
         option["share_of_default"] = round(option_cost / baseline, 2) if baseline else 1.0
         # An effort override on a model that rejects the parameter is a bug, not
@@ -281,8 +292,17 @@ def save_config(checkpoint_dir, choice, projection_options):
     return payload
 
 
+# The longest text a remap note shows for one value from the file.
+NOTE_VALUE_CHARS = 80
+
+
 def _shown(value):
-    return value if isinstance(value, str) else json.dumps(value)
+    """The value as a remap note shows it: a string as is, anything else as
+    JSON, cut to NOTE_VALUE_CHARS characters."""
+    text = value if isinstance(value, str) else json.dumps(value)
+    if len(text) > NOTE_VALUE_CHARS:
+        text = text[:NOTE_VALUE_CHARS - 3] + "..."
+    return text
 
 
 def _menu_key(worker, verifier):
@@ -303,8 +323,9 @@ def load_config(checkpoint_dir, or_default=False):
     """Return the models a prior run committed to, or None if there is no record.
 
     This is the one place the model and effort rules live. batch.js runs the
-    stages it is handed and refuses any model but opus or haiku, any effort
-    on haiku and any effort that is not plain lowercase letters, but it does
+    stages it is handed and refuses any model but opus or haiku, a verifier
+    on anything but opus, any effort on haiku and any effort that is not
+    plain lowercase letters, but it does
     not check which levels are valid, so its models should always come from
     here. With or_default, a missing or unreadable
     record returns default_config() instead of None. Nothing is written in
@@ -312,14 +333,16 @@ def load_config(checkpoint_dir, or_default=False):
 
     load_config checks the record on every load and corrects what is wrong:
 
-    - A stage whose model is not one the menu prices (an old Sonnet
-      checkpoint, a hand edit) moves to that stage's default, and any effort
-      on that stage goes with the old model.
+    - A stage whose model that stage may not run on (an old Sonnet
+      checkpoint, a Haiku verifier from the removed haiku-both option, a hand
+      edit) moves to that stage's default, and any effort on that stage goes
+      with the old model.
     - A spelling such as "Opus 5.5" or "us.anthropic.claude-opus-5-5"
       becomes its alias.
     - An effort that is not a valid level, and any effort on Haiku, is
       dropped. A valid level in the wrong case is lowercased.
-    - "choice" is set to the menu option the stages match, or "custom".
+    - "choice" is set to the menu option the stages match, or "custom". A
+      missing or null choice is noted as "not set".
     - Keys other than model and effort inside a stage are dropped.
 
     Each of those changes is listed under "remapped" so the caller can tell
@@ -351,7 +374,7 @@ def load_config(checkpoint_dir, or_default=False):
             raw, effort = cfg, None
             tidied = True
         model = normalize_model(raw)
-        if model in PRICES:
+        if model in STAGE_MODELS[stage]:
             new = {"model": model}
             if model != raw:
                 remapped.append("{}: {} -> {}".format(stage, _shown(raw), model))
@@ -360,7 +383,7 @@ def load_config(checkpoint_dir, or_default=False):
             remapped.append("{}: {} -> {}".format(stage, _shown(raw), default))
         if effort is not None:
             level = normalize_effort(effort)
-            if model not in PRICES:
+            if model not in STAGE_MODELS[stage]:
                 reason = ("no model was named" if raw is None
                           else "it came with a model that is not allowed")
             elif level is None:
@@ -378,7 +401,9 @@ def load_config(checkpoint_dir, or_default=False):
         data[stage] = new
     choice = _menu_key(data["worker"], data["verifier"])
     if data.get("choice") != choice:
-        remapped.append("choice: {} -> {}".format(_shown(data.get("choice")), choice))
+        old = data.get("choice")
+        # A file with no choice, or a null one, is not an error, so say "not set".
+        remapped.append("choice: {} -> {}".format("not set" if old is None else _shown(old), choice))
         data["choice"] = choice
     if remapped or tidied:
         try:
@@ -435,19 +460,24 @@ def _main(argv=None):
 
     args = parser.parse_args(argv)
 
-    if args.command in ("project", "save-config"):
-        units = state.load_units(args.units)
-        spec_text = _read_text(args.spec)
-
-    if args.command == "project":
-        projection = project(units, spec_text, args.attempts, args.worker_out,
-                             args.verifier_out, args.ask_above)
-        print(render(projection) if args.text else json.dumps(projection, indent=2))
-        return 0
-    if args.command == "save-config":
-        projection = project(units, spec_text)
-        print(json.dumps(save_config(args.dir, args.choice, projection["options"]), indent=2))
-        return 0
+    try:
+        if args.command in ("project", "save-config"):
+            units = state.load_units(args.units)
+            spec_text = _read_text(args.spec)
+        if args.command == "project":
+            projection = project(units, spec_text, args.attempts, args.worker_out,
+                                 args.verifier_out, args.ask_above)
+            print(render(projection) if args.text else json.dumps(projection, indent=2))
+            return 0
+        if args.command == "save-config":
+            projection = project(units, spec_text)
+            print(json.dumps(save_config(args.dir, args.choice, projection["options"]), indent=2))
+            return 0
+    except (OSError, ValueError) as exc:
+        # An unknown --choice, a spec without its sections, or a units or spec
+        # file that is missing or does not parse: say so, no traceback.
+        print("error: {}".format(exc), file=sys.stderr)
+        return 1
     if args.command == "load-config":
         config = load_config(args.dir, or_default=args.or_default)
         if config is None:

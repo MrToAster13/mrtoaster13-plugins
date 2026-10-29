@@ -408,10 +408,13 @@ def test_a_lock_windows_reports_in_use_for_a_moment_is_retried(batch, monkeypatc
     os.utime(str(path), (old, old))
     real_open, calls = os.open, []
 
+    # Only opens of the lock itself count. Stealing a stale lock also opens a
+    # guard file next to it, which is not what this test is about.
     def busy(target, flags, *rest):
-        calls.append(target)
-        if len(calls) == busy_on:
-            raise PermissionError(13, "in use", target)
+        if str(target) == str(path):
+            calls.append(target)
+            if len(calls) == busy_on:
+                raise PermissionError(13, "in use", target)
         return real_open(target, flags, *rest)
 
     monkeypatch.setattr(state.os, "open", busy)
@@ -495,6 +498,19 @@ def test_units_without_an_id_are_rejected_at_load(tmp_path):
     path.write_text(json.dumps([{"jd": "x"}]), encoding="utf-8")
     with pytest.raises(ValueError, match="'id'"):
         state.load_units(str(path))
+
+
+@pytest.mark.parametrize(
+    "unit_id",
+    [["a"], {"a": 1}, 7, None, True, "", "  "],
+    ids=["list", "dict", "int", "null", "bool", "empty", "blank"],
+)
+def test_a_unit_id_that_is_not_a_non_empty_string_is_rejected_at_load(tmp_path, unit_id):
+    path = tmp_path / "units.json"
+    path.write_text(json.dumps([{"id": unit_id}]), encoding="utf-8")
+    with pytest.raises(ValueError, match="unit id must be a non-empty string"):
+        state.load_units(str(path))
+
 
 
 # --- the CLI the agents actually call -------------------------------------
@@ -690,3 +706,280 @@ def test_a_config_with_a_byte_order_mark_reads(tmp_path):
     cdir.mkdir()
     state.config_path(cdir).write_bytes(b"\xef\xbb\xbf" + b'{"choice": "x"}')
     assert state.read_config(cdir) == {"choice": "x"}
+
+
+def test_ids_that_differ_only_in_case_load_and_get_different_files(tmp_path):
+    # An id with an uppercase letter gets a hash tag, so case twins load and
+    # never share a file, even on a case-insensitive file system.
+    path = tmp_path / "units.json"
+    path.write_text(json.dumps([{"id": "Acme"}, {"id": "acme"}]), encoding="utf-8")
+    assert [u["id"] for u in state.load_units(str(path))] == ["Acme", "acme"]
+    assert state.record_path(tmp_path, "Acme").name.lower() != state.record_path(tmp_path, "acme").name.lower()
+    state.record(tmp_path, "Acme", "verified")
+    assert state.read_record(tmp_path, "acme") is None
+
+
+def test_an_id_equal_to_another_ids_slug_is_rejected_at_load(tmp_path):
+    path = tmp_path / "units.json"
+    path.write_text(json.dumps([{"id": "a/b"}, {"id": state.slug_for("a/b")}]), encoding="utf-8")
+    with pytest.raises(ValueError, match="would share the checkpoint file"):
+        state.load_units(str(path))
+
+
+def test_a_record_written_for_another_id_reads_as_pending(tmp_path):
+    cdir = tmp_path / "checkpoint"
+    state.record(cdir, "a", "verified")
+    os.replace(str(state.record_path(cdir, "a")), str(state.record_path(cdir, "b")))
+    assert state.read_record(cdir, "b") is None
+
+
+@pytest.mark.parametrize("number", ["NaN", "Infinity", "-Infinity", "1e999", "-1e999"])
+def test_a_units_file_with_a_non_finite_number_is_rejected_at_load(tmp_path, number):
+    path = tmp_path / "units.json"
+    path.write_text('[{"id": "a", "n": %s}]' % number, encoding="utf-8")
+    with pytest.raises(ValueError, match="not JSON|out of range"):
+        state.load_units(str(path))
+
+
+# --- two callers that judge the same lock stale --------------------------
+
+def test_a_caller_with_an_old_stale_judgment_does_not_take_a_lock_stolen_meanwhile(batch, monkeypatch):
+    # B judges the lock stale, then A steals it and writes a
+    # fresh lock before B acts. B must not delete A's lock and win too.
+    _, _, cdir = batch
+    assert state.claim(cdir, "unit-14", owner="dead") is True
+    path = state.lock_path(cdir, "unit-14")
+    old = time.time() - 3600
+    os.utime(str(path), (old, old))
+
+    real_getmtime = os.path.getmtime
+    results = {}
+
+    def a_steals_while_b_judges(target):
+        seen = real_getmtime(target)
+        if "a" not in results:
+            monkeypatch.setattr(state.os.path, "getmtime", real_getmtime)
+            results["a"] = state.claim(cdir, "unit-14", lease_seconds=60, owner="a")
+        return seen
+
+    monkeypatch.setattr(state.os.path, "getmtime", a_steals_while_b_judges)
+    results["b"] = state.claim(cdir, "unit-14", lease_seconds=60, owner="b")
+
+    assert results == {"a": True, "b": False}
+    assert json.loads(path.read_text(encoding="utf-8"))["owner"] == "a"
+
+
+@pytest.mark.parametrize("lease", [60, 0], ids=["lease-60", "lease-0"])
+def test_a_fresh_steal_guard_makes_the_caller_lose(batch, lease):
+    # Another caller is stealing right now.
+    _, _, cdir = batch
+    assert state.claim(cdir, "unit-15") is True
+    path = state.lock_path(cdir, "unit-15")
+    old = time.time() - 3600
+    os.utime(str(path), (old, old))
+    guard = path.with_name(path.name + ".steal")
+    guard.write_text("", encoding="utf-8")
+
+    assert state.claim(cdir, "unit-15", lease_seconds=lease) is False
+    assert path.exists()
+    assert guard.exists()
+
+
+@pytest.mark.parametrize("offset", [-3600, 3600], ids=["old", "far-future"])
+def test_a_steal_guard_left_by_a_dead_caller_is_cleared(batch, offset):
+    # A stealer that died leaves its guard. One 60 seconds or
+    # more off the clock is removed; that call still loses, the next one wins.
+    _, _, cdir = batch
+    assert state.claim(cdir, "unit-16") is True
+    path = state.lock_path(cdir, "unit-16")
+    old = time.time() - 3600
+    os.utime(str(path), (old, old))
+    guard = path.with_name(path.name + ".steal")
+    guard.write_text("", encoding="utf-8")
+    when = time.time() + offset
+    os.utime(str(guard), (when, when))
+
+    assert state.claim(cdir, "unit-16", lease_seconds=60) is False
+    assert not guard.exists()
+    assert state.claim(cdir, "unit-16", lease_seconds=60) is True
+    assert not guard.exists()
+
+
+def test_clearing_a_dead_guard_does_not_delete_a_live_one_made_meanwhile(batch, monkeypatch):
+    # X judges the guard old, then before X removes
+    # it, another caller clears it and W makes a fresh one. X must leave W's.
+    _, _, cdir = batch
+    assert state.claim(cdir, "unit-17") is True
+    path = state.lock_path(cdir, "unit-17")
+    old = time.time() - 3600
+    os.utime(str(path), (old, old))
+    guard = path.with_name(path.name + ".steal")
+    guard.write_text("dead", encoding="utf-8")
+    os.utime(str(guard), (old, old))
+
+    real_getmtime = os.path.getmtime
+
+    def swap_guard(target):
+        seen = real_getmtime(target)
+        if str(target) == str(guard):
+            monkeypatch.setattr(state.os.path, "getmtime", real_getmtime)
+            os.unlink(str(guard))
+            guard.write_text("live", encoding="utf-8")
+        return seen
+
+    monkeypatch.setattr(state.os.path, "getmtime", swap_guard)
+    assert state.claim(cdir, "unit-17", lease_seconds=60) is False
+    assert guard.read_text(encoding="utf-8") == "live"
+
+
+def test_a_stealer_does_not_delete_a_guard_that_replaced_its_own(batch, monkeypatch):
+    # The stealer's own guard is cleared and another
+    # caller makes a fresh one while the stealer works. The stealer must not
+    # remove the fresh guard when it finishes.
+    _, _, cdir = batch
+    assert state.claim(cdir, "unit-18") is True
+    path = state.lock_path(cdir, "unit-18")
+    old = time.time() - 3600
+    os.utime(str(path), (old, old))
+    guard = path.with_name(path.name + ".steal")
+
+    real_stat = os.stat
+    swapped = []
+
+    def swap_during_steal(target, *args, **kwargs):
+        if str(target) == str(path) and guard.exists() and not swapped:
+            swapped.append(True)
+            os.unlink(str(guard))
+            guard.write_text("other", encoding="utf-8")
+        return real_stat(target, *args, **kwargs)
+
+    monkeypatch.setattr(state.os, "stat", swap_during_steal)
+    state.claim(cdir, "unit-18", lease_seconds=60)
+    assert swapped
+    assert guard.exists() and guard.read_text(encoding="utf-8") == "other"
+
+
+def test_an_id_equal_to_another_ids_tag_in_another_case_is_rejected_at_load(tmp_path):
+    # Unit-01 lands on Unit-01.2f666dfc.json. unit-01.2f666dfc keeps its own
+    # name, which a case-insensitive file system reads as the same file.
+    path = tmp_path / "units.json"
+    path.write_text(json.dumps([{"id": "Unit-01"}, {"id": state.slug_for("Unit-01").lower()}]),
+                    encoding="utf-8")
+    with pytest.raises(ValueError, match="would share the checkpoint file"):
+        state.load_units(str(path))
+
+
+@pytest.mark.parametrize("number", ["NaN", "Infinity", "-1e999"])
+def test_a_record_with_a_non_finite_number_reads_as_pending(tmp_path, number):
+    cdir = tmp_path / "checkpoint"
+    cdir.mkdir()
+    state.record_path(cdir, "u1").write_text(
+        '{"unit_id": "u1", "status": "verified", "attempt": %s}' % number, encoding="utf-8")
+    assert state.read_record(cdir, "u1") is None
+
+
+def test_a_steal_guard_busy_for_a_moment_is_retried(batch, monkeypatch):
+    # Windows can report the guard file in use while antivirus scans it.
+    _, _, cdir = batch
+    assert state.claim(cdir, "unit-19") is True
+    path = state.lock_path(cdir, "unit-19")
+    old = time.time() - 3600
+    os.utime(str(path), (old, old))
+    guard = str(path.with_name(path.name + ".steal"))
+    real_open, busy = os.open, []
+
+    def busy_guard_once(target, flags, *rest):
+        if str(target) == guard and not busy:
+            busy.append(target)
+            raise PermissionError(13, "in use", target)
+        return real_open(target, flags, *rest)
+
+    monkeypatch.setattr(state.os, "open", busy_guard_once)
+    assert state.claim(cdir, "unit-19", lease_seconds=60) is True
+    assert busy
+
+
+# --- a units file strict JSON rejects is a clean CLI error ------------------
+
+BAD_UNITS = ['[{"id": "a", "n": NaN}]', '[{"id": "a", "n": Infinity}]', '[{"id": "a", "n": 1e999}]']
+
+
+@pytest.mark.parametrize("command", ["todo", "report"])
+@pytest.mark.parametrize("text", BAD_UNITS + [None])
+def test_the_todo_and_report_cli_exit_1_on_a_units_file_strict_json_rejects(
+        tmp_path, capsys, command, text):
+    units_file = tmp_path / "units.json"
+    if text is not None:
+        units_file.write_text(text, encoding="utf-8")
+    rc = state._main([command, "--dir", str(tmp_path / "checkpoint"), "--units", str(units_file)])
+    out = capsys.readouterr()
+    assert rc == 1
+    assert out.err.startswith("error: ")
+    assert "Traceback" not in out.err
+    assert out.out == ""
+
+
+@pytest.mark.parametrize("text", BAD_UNITS + [None])
+def test_the_handoff_cli_exits_1_on_a_units_file_strict_json_rejects(tmp_path, capsys, text):
+    sys.path.insert(0, str(SCRIPTS))
+    import handoff
+
+    units_file = tmp_path / "units.json"
+    if text is not None:
+        units_file.write_text(text, encoding="utf-8")
+    root = tmp_path / "repo"
+    rc = handoff._main(["--units", str(units_file), "--dir", str(tmp_path / "checkpoint"),
+                        "--slug", "bad", "--root", str(root)])
+    out = capsys.readouterr()
+    assert rc == 1
+    assert out.err.startswith("error: ")
+    assert "Traceback" not in out.err
+    assert not (root / "docs" / "handoffs").exists() or not list(
+        (root / "docs" / "handoffs").iterdir())
+
+
+# --- release retries a lock Windows reports in use --------------------------
+
+def test_release_retries_while_windows_reports_the_lock_in_use(batch, monkeypatch):
+    _, _, cdir = batch
+    assert state.claim(cdir, "unit-20") is True
+    path = state.lock_path(cdir, "unit-20")
+    real_unlink, busy = os.unlink, []
+
+    def busy_once(target, *rest, **kw):
+        if str(target) == str(path) and not busy:
+            busy.append(target)
+            raise PermissionError(13, "in use", target)
+        return real_unlink(target, *rest, **kw)
+
+    monkeypatch.setattr(state.os, "unlink", busy_once)
+    assert state.release(cdir, "unit-20") is True
+    assert busy
+    assert not path.exists()
+
+
+# --- nesting depth checked after the parser ---------------------------------
+
+def _nested_list(depth):
+    value = []
+    for _ in range(depth):
+        value = [value]
+    return value
+
+
+def test_a_units_file_nested_too_deeply_is_a_value_error_when_json_parses_it(tmp_path, monkeypatch):
+    # ELI-668: on CI's Python 3.14.9, json.load parsed 100000 nested brackets
+    # without RecursionError, so load_units reported a missing id instead.
+    # Patching json.load reproduces that parser on any Python.
+    path = tmp_path / "units.json"
+    path.write_text("[]", encoding="utf-8")
+    deep = _nested_list(5000)
+    monkeypatch.setattr(state.json, "load", lambda *a, **k: deep)
+    with pytest.raises(ValueError, match="units file is nested too deeply to parse"):
+        state.load_units(str(path))
+
+
+def test_units_with_moderately_nested_fields_still_load(tmp_path):
+    path = tmp_path / "units.json"
+    path.write_text(json.dumps([{"id": "a", "payload": _nested_list(50)}]), encoding="utf-8")
+    assert [u["id"] for u in state.load_units(str(path))] == ["a"]

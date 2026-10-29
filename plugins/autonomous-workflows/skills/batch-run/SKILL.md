@@ -52,12 +52,15 @@ looks good returns yes every time.
 
 1. **Resolve paths.** Checkpoint dir defaults to `<units.json dir>/checkpoint`.
    Create it. Say the absolute path out loud so the user can inspect it.
+   `<skill>` below is this skill's base directory, the absolute path Claude
+   Code prints when the skill loads. Write it with forward slashes, which
+   Windows accepts, so no backslash lands in the `Workflow` JS string.
 
 2. **Compute the todo list.** Always, resume or not. A fresh run is just a run
    where nothing is verified yet, so there is no separate code path:
 
    ```
-   python ${CLAUDE_PLUGIN_ROOT}/skills/batch-run/scripts/state.py todo --units <units.json> --dir <checkpoint>
+   python <skill>/scripts/state.py todo --units <units.json> --dir <checkpoint>
    ```
 
    Without `--resume` the user may want a clean run: ask before deleting
@@ -70,15 +73,16 @@ looks good returns yes every time.
 4. **Project the cost, and ask before spending real money.**
 
    ```
-   python ...\scripts\estimate.py project --units <units.json> --spec <spec.md> --text
+   python <skill>/scripts/estimate.py project --units <units.json> --spec <spec.md> --text
    ```
 
    First check `load-config`: if a prior run already chose models, reuse them
    silently. A resume must not re-decide something the user already answered.
    The one exception: if the result carries a `remapped` list, `load-config`
-   corrected the saved record. A stage that named a model no longer allowed (an
-   old Sonnet checkpoint, or a near miss such as `claude-opusx`) moved to that
-   stage's default, Haiku writer or Opus verifier. A spelling such as `Opus 5.5`
+   corrected the saved record. A stage that named a model it may not run on (an
+   old Sonnet checkpoint, a Haiku verifier from the removed `haiku-both`
+   option, or a near miss such as `claude-opusx`) moved to that stage's
+   default, Haiku writer or Opus verifier. A spelling such as `Opus 5.5`
    or `us.anthropic.claude-opus-5-5` became its alias. An effort that is not
    `low`, `medium`, `high`, `xhigh` or `max`, and any effort on Haiku, was
    dropped. A key other than `model` or `effort` inside a stage was dropped.
@@ -90,7 +94,7 @@ looks good returns yes every time.
    final message.
 
    ```
-   python ...\scripts\estimate.py load-config --dir <checkpoint>
+   python <skill>/scripts/estimate.py load-config --dir <checkpoint>
    ```
 
    If `ask` is true (default: over 100k projected output tokens, which is 53
@@ -100,7 +104,7 @@ looks good returns yes every time.
    it:
 
    ```
-   python ...\scripts\estimate.py save-config --dir <checkpoint> --units <units.json> --spec <spec.md> --choice <key>
+   python <skill>/scripts/estimate.py save-config --dir <checkpoint> --units <units.json> --spec <spec.md> --choice <key>
    ```
 
    **If you cannot ask** (background run, non-interactive session), do not
@@ -114,37 +118,40 @@ looks good returns yes every time.
    record stays on disk for you to look at.
 
    ```
-   python ...\scripts\estimate.py load-config --dir <checkpoint> --or-default
+   python <skill>/scripts/estimate.py load-config --dir <checkpoint> --or-default
    ```
 
    Pass its `worker` and `verifier` to the workflow as `models`. `estimate.py`
    is the only place the model and effort rules live. `batch.js` runs each
    stage's model and effort as given. When any unit is pending it refuses to
    start if `models` is missing, a stage names anything but `opus` or `haiku`,
-   or an effort is on Haiku or is not plain lowercase letters.
+   the verifier names anything but `opus`, or an effort is on Haiku or is not
+   plain lowercase letters.
 
    Two things the menu encodes that are easy to get wrong:
 
    - **A model downgrade cuts price per token, not token count.** Price the
      options in dollars. A lower `effort` is the opposite: same rate, fewer
      tokens, by an amount this does not measure. Do not claim a percentage.
-   - **Downgrade the writer before the verifier.** They fail differently. A
-     cheap writer produces a weak artifact that the verifier still catches. A
-     cheap verifier waves through an invented certification, and nobody looks
-     at that unit again.
+   - **Only the writer can move to Haiku.** They fail differently. A cheap
+     writer produces a weak artifact that the verifier still catches. A cheap
+     verifier waves through an invented certification, and nobody looks at that
+     unit again. That is why the verifier always runs on Opus. The menu has no
+     Haiku verifier, `load-config` moves a saved one to Opus, and `batch.js`
+     refuses one.
 
 5. **Launch the workflow.** This skill instructs you to call `Workflow`, which
    satisfies the opt-in requirement. Use `scriptPath`, not an inline script:
 
    ```
    Workflow({
-     scriptPath: "${CLAUDE_PLUGIN_ROOT}/skills/batch-run/workflows/batch.js",
+     scriptPath: "<skill>/workflows/batch.js",
      args: {
        units: [...],                 // the todo list from step 2, verbatim
        worker: "...",                // the ## Worker section
        verifier: "...",              // the ## Verifier section
        checkpointDir: "<abs path>",
-       statePath: "${CLAUDE_PLUGIN_ROOT}/skills/batch-run/scripts/state.py",
+       statePath: "<skill>/scripts/state.py",
        maxAttempts: 2,
        models: { worker: {...}, verifier: {...} }   // from load-config --or-default
      }
@@ -156,16 +163,17 @@ looks good returns yes every time.
 6. **Report from disk, not from the workflow's return value:**
 
    ```
-   python ${CLAUDE_PLUGIN_ROOT}/skills/batch-run/scripts/state.py report --units <units.json> --dir <checkpoint>
+   python <skill>/scripts/state.py report --units <units.json> --dir <checkpoint>
    ```
 
 7. **If anything is not verified, render the handoff:**
 
    ```
-   python ...\scripts\handoff.py --units <units.json> --dir <checkpoint> --spec <spec.md> --slug <slug>
+   python <skill>/scripts/handoff.py --units <units.json> --dir <checkpoint> --spec <spec.md> --slug <slug>
    ```
 
-   Run these through PowerShell. Git Bash rewrites a leading slash in an
+   On Windows, run these through PowerShell. On Linux and macOS, bash is
+   fine, because only Git Bash on Windows has this problem. Git Bash rewrites a leading slash in an
    argument into a Windows path, so a literal `/batch-run ...` handed to a
    script through Bash arrives as `C:/Program Files/Git/batch-run ...`. The
    resume command is generated inside `handoff.py` to dodge exactly that, but
@@ -273,4 +281,6 @@ valid, which is why its models must come from `load-config`.
 - `tests/test_batch_js.py` - the model guard in `batch.js` and its contract with
   `load-config --or-default`, run under node; skipped when node is not on PATH.
 - Run the tests with `python -m pytest tests/ -q` from the skill dir.
-- `examples/` - a runnable units and spec pair.
+- `examples/` - a sample units and spec pair. Its paths start with a
+  `<project>` placeholder, so replace that with a real folder holding those
+  files before you run it.

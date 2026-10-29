@@ -1,0 +1,9 @@
+{
+  "choice": "haiku-both",
+  "verifier": {
+    "model": "haiku"
+  },
+  "worker": {
+    "model": "haiku"
+  }
+}

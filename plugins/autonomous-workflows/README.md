@@ -102,7 +102,7 @@ Copy-Item -Recurse skills/factory, skills/remediate, skills/harden-repos, skills
 
 Restart Claude Code, and you have `/factory`, `/remediate`, `/harden-repos`, `/mine-provenance`, `/fleet-health`, `/tdd-loop`, `/batch-run`.
 
-Standalone `batch-run` note: its `SKILL.md` locates its scripts through `${CLAUDE_PLUGIN_ROOT}`, which only the plugin install sets. For a standalone copy, replace that prefix with the folder you copied it to.
+Standalone `batch-run` note: its `SKILL.md` writes its script paths as `<skill>/scripts/...`, where `<skill>` is the skill's base directory that Claude Code prints when the skill loads. This works the same for a plugin install and a standalone copy, so nothing needs replacing.
 
 ## Archive
 

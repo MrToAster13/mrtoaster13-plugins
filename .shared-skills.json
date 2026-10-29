@@ -1,5 +1,6 @@
 {
   "dirs": [
+    "plugins/autonomous-workflows/skills/batch-run",
     "plugins/autonomous-workflows/skills/factory",
     "plugins/autonomous-workflows/skills/fleet-health",
     "plugins/autonomous-workflows/skills/tdd-loop"
@@ -10,6 +11,24 @@
   "files": {
     ".github/check-shared-skills.py": "5a4296fe471ea68e7f60b95d8131f31d9905e38e1a11193ab884690406ac85bc",
     ".github/workflows/shared-skills.yml": "ca1c3eb9f39f83da74dc2b6272b7c15578b9201918838795cb55b2d513ef876c",
+    "plugins/autonomous-workflows/skills/batch-run/SKILL.md": "8054b6ae03c12e8066fc8aae329a8284482bd5ece1c1e530257a94dd51fe70c3",
+    "plugins/autonomous-workflows/skills/batch-run/examples/spec.md": "d87c2687ee5899d5bd7cce10566e953a265fd9aaff8e3e739529afb6d02c311c",
+    "plugins/autonomous-workflows/skills/batch-run/examples/units.json": "110058ec18f7bf06193bdcfee6aa317d41fb296ba9fd668f7d11769c475c8ec7",
+    "plugins/autonomous-workflows/skills/batch-run/scripts/estimate.py": "69a3c6f80d0cb5fb474b35a8373ea03245e34b5d270ebd5f53f706c662b7ecc5",
+    "plugins/autonomous-workflows/skills/batch-run/scripts/handoff.py": "806fea6c68f6afca89020784e2306ada828a6bbd2ab1d130a928c9fc3c174b2e",
+    "plugins/autonomous-workflows/skills/batch-run/scripts/state.py": "fbaf73560b77214313783cbd167e058bc4eaa90179fc77024907a359ebc40de7",
+    "plugins/autonomous-workflows/skills/batch-run/tests/fixtures/foreign-checkpoint/Unit-01.2f666dfc.json": "0a00f4769bdc146e9d2a51b935f14503d3008e7a489882a822650d01a6df24be",
+    "plugins/autonomous-workflows/skills/batch-run/tests/fixtures/foreign-checkpoint/Unit-03.b935b7ce.json": "939cd33863b1ba708ebc2a4eec69f7db41a019bbd740247393d496ee215a39ad",
+    "plugins/autonomous-workflows/skills/batch-run/tests/fixtures/foreign-checkpoint/a_b.3ec69c85.json": "e395a86de287dd1ac26dfd7ab6f8d43921dba1208e78fd9221128f0baba4cd2b",
+    "plugins/autonomous-workflows/skills/batch-run/tests/fixtures/foreign-checkpoint/batch-config.1dd12472.json": "5cf5465a2cccc6c35936e58c939966d7d2ff5885032f5dabf02cb58940fe80cf",
+    "plugins/autonomous-workflows/skills/batch-run/tests/fixtures/foreign-checkpoint/unit-02.json": "e51a2fe049c124a1f6d45f9e8468bca802b0a943db38cdd4e3958cf7e43ea61a",
+    "plugins/autonomous-workflows/skills/batch-run/tests/fixtures/foreign-config/claude-config-opus-low-effort/batch-config.json": "b4687a7d10a51501fcd532f7eed55a8e84b2f088e3e08e3451d38771104317b1",
+    "plugins/autonomous-workflows/skills/batch-run/tests/fixtures/foreign-config/plugin-haiku-both/batch-config.json": "52c671d8ceedbdd28d0214eb9c123091ec9ac645660d9fc1e5c7250142893335",
+    "plugins/autonomous-workflows/skills/batch-run/tests/test_batch_js.py": "5bfb8fef212e477e070bc09391fb31e5c142f62440fd97be570a58aba059b825",
+    "plugins/autonomous-workflows/skills/batch-run/tests/test_cross_copy.py": "0182295f69ee93738366176eb58618b7c990c182ece8719b8ea2cf631256d619",
+    "plugins/autonomous-workflows/skills/batch-run/tests/test_estimate.py": "a2ce4288ea093fabe43a19094b5315ea92872d0f4457f563289c8deef74e60de",
+    "plugins/autonomous-workflows/skills/batch-run/tests/test_state.py": "93e908f546dec5c7c8a3d7985a2946d3edffaf496e552477a9b5ed2e3e4a0f1f",
+    "plugins/autonomous-workflows/skills/batch-run/workflows/batch.js": "8b64d1bac7d254ff5341019bbb5dc5efedf54f9a9e16f7b007f18bcd0210fd9c",
     "plugins/autonomous-workflows/skills/factory/SKILL.md": "786b187e0c94c80709bf7dae55217981639f69129301c55ccbde2bbf34acd683",
     "plugins/autonomous-workflows/skills/factory/closing.md": "8cfdda11a7bb0aaed34d0b07f71aac1cf97321fa08f64579f9293f4cd8ff47a1",
     "plugins/autonomous-workflows/skills/factory/ledger.md": "0432e9b8d07ab25482d995b2e599965c201f4a62efb502a15c3823736100b2ab",
