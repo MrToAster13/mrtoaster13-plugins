@@ -50,8 +50,19 @@ def profile(tmp_path):
     return home, project, bindir
 
 
+# A Windows child Python cannot start without SYSTEMROOT ("failed to get random
+# numbers"). It is the only parent variable that passes through. PATHEXT stays
+# out: the child does not need it, and on Python 3.8 to 3.11 setting it makes
+# shutil.which skip the extensionless fake tools. (On Windows with 3.12+,
+# shutil.which skips them either way, so those tests still fail there.)
+PASSTHROUGH = ("SYSTEMROOT",)
+
+
 def run(home, project, bindir, *args, vault_env=None):
     env = {"HOME": str(home), "USERPROFILE": str(home), "PATH": str(bindir)}
+    for name in PASSTHROUGH:
+        if name in os.environ:
+            env[name] = os.environ[name]
     if vault_env is not None:
         env["FACTORY_VAULT"] = str(vault_env)
     return subprocess.run(
@@ -138,6 +149,44 @@ def test_vault_comes_from_the_flag_or_the_environment(profile, tmp_path):
     ticket.write_text("", encoding="utf-8")
     assert run(home, project, bindir, "--vault", str(other)).returncode == 0
     assert run(home, project, bindir, vault_env=other).returncode == 0
+
+
+def captured_child_env(monkeypatch, profile, **kwargs):
+    seen = {}
+
+    def fake_run(cmd, **options):
+        seen.update(options["env"])
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    run(*profile, **kwargs)
+    return seen
+
+
+def test_run_passes_systemroot_so_a_windows_child_python_can_start(monkeypatch, profile):
+    # Without SYSTEMROOT a Windows child Python dies with "failed to get
+    # random numbers". The sentinel proves the value comes from os.environ.
+    monkeypatch.setenv("SYSTEMROOT", "sentinel-systemroot")
+    env = captured_child_env(monkeypatch, profile)
+    assert env.get("SYSTEMROOT") == "sentinel-systemroot"
+
+
+def test_run_leaks_nothing_else_from_the_parent(monkeypatch, profile):
+    monkeypatch.setenv("SYSTEMROOT", "sentinel-systemroot")
+    monkeypatch.setenv("FACTORY_LEAK_CHECK", "leaked")
+    monkeypatch.setenv("FACTORY_VAULT", "leaked-vault")
+    monkeypatch.setenv("PATHEXT", ".EXE")
+    env = captured_child_env(monkeypatch, profile)
+    assert set(env) == {"HOME", "USERPROFILE", "PATH", "SYSTEMROOT"}
+    home, _, bindir = profile
+    assert env["PATH"] == str(bindir)
+    assert env["HOME"] == env["USERPROFILE"] == str(home)
+
+
+def test_run_omits_systemroot_when_the_parent_has_none(monkeypatch, profile, tmp_path):
+    monkeypatch.delenv("SYSTEMROOT", raising=False)
+    env = captured_child_env(monkeypatch, profile, vault_env=tmp_path)
+    assert set(env) == {"HOME", "USERPROFILE", "PATH", "FACTORY_VAULT"}
 
 
 def test_skill_md_runs_the_preflight_before_binding():
