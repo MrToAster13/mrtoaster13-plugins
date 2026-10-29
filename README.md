@@ -14,7 +14,7 @@ working. See [its README](plugins/clear-not-compact/README.md) for the why.
 
 Seven skills that run bounded loops on their own, each built around a hard rule that stops the usual "unattended agent" failure modes:
 
-- **`/factory`** — turns an approved spec into an MVP unattended: ten agents at once in isolated worktrees, an adversary pass on every diff, blockers parked instead of stopping the run, and one PR left for you to merge.
+- **`/factory`** — turns an approved spec into an MVP unattended: ten agents at once in isolated worktrees, an adversary pass on every diff, blockers parked instead of stopping the run, and one PR left for you to merge. It needs skills and tools this plugin does not ship: the `setup-matt-pocock-skills`, `to-spec`, `to-tickets` and `tdd` skills from [github.com/mattpocock/skills](https://github.com/mattpocock/skills), a vault with the unpublished `ticket.py` tracker (set `FACTORY_VAULT` or pass `--vault`), `git` from [git-scm.com](https://git-scm.com) and `gh` from [cli.github.com](https://cli.github.com). See [Prerequisites](plugins/autonomous-workflows/README.md#prerequisites-for-factory).
 - **`/remediate`** — a test-verified fix loop that iterates until green but can't cheat: it never edits tests, and stops honestly when a fix is out of reach.
 - **`/harden-repos`** — fans out one fresh-context agent per repo, applies only verified-safe fixes on a branch, never pushes, and aggregates into `HARDENING_HANDOFF.md`.
 - **`/mine-provenance`** — audits a portfolio against ground-truth artifacts (commit/file/test), sorts claims into VERIFIED / gaps / provenance-flags, and never overclaims.
@@ -47,6 +47,11 @@ mrtoaster13-plugins/
 ```
 
 Each plugin owns its `.claude-plugin/plugin.json`, `skills/`, and README, so it versions and installs on its own.
+
+Some skills here also live in the author's private claude-config repo, which is
+their source. `.shared-skills.json` lists the files claude-config generates
+(`fleet-health` so far), and the `shared-skills` workflow fails when one of them
+is edited by hand. Change those in claude-config and regenerate.
 
 ## License
 

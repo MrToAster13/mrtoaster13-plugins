@@ -39,6 +39,15 @@ An agent handed neither has been briefed wrong. Spawn it again.
 
 A wrong binding writes to the wrong ticket project and is expensive to unpick.
 
+0. **Prerequisites.** Run
+   `python ${CLAUDE_PLUGIN_ROOT}/skills/factory/scripts/preflight.py`, adding
+   `--vault <path>` when the vault is not at `~/obsidian-vault`. In a standalone
+   copy, replace `${CLAUDE_PLUGIN_ROOT}/skills` with the folder you copied the
+   skill into. It checks for the skills and tools this plugin does not ship:
+   setup-matt-pocock-skills, to-spec, to-tickets and tdd, the vault's
+   `ticket.py`, `git` and `gh`. A non-zero exit stops the run here. Show the
+   user its `missing:` lines, which say where to get each item, and do nothing
+   else until they install them.
 1. **Repo.** `git rev-parse --show-toplevel`, `git remote -v`, current branch,
    `git status --short`. A dirty tree stops the run: ask the user to commit or
    stash first.
