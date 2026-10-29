@@ -48,6 +48,11 @@ mrtoaster13-plugins/
 
 Each plugin owns its `.claude-plugin/plugin.json`, `skills/`, and README, so it versions and installs on its own.
 
+Some skills here also live in the author's private claude-config repo, which is
+their source. `.shared-skills.json` lists the files claude-config generates
+(`fleet-health` so far), and the `shared-skills` workflow fails when one of them
+is edited by hand. Change those in claude-config and regenerate.
+
 ## License
 
 [MIT](LICENSE)

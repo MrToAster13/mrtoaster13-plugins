@@ -1,21 +1,29 @@
 ---
 name: fleet-health
-description: Audit every local git repo at once: sync state against the live remote, unpushed commits, stale merged branches, and staged secrets or SSH logs. Produces a per-repo report with ready-to-run, shell-correct ship commands, then executes pushes and branch cleanups after explicit confirmation. Use on "fleet health", "check all my repos", "what's unpushed", "clean up stale branches".
+description: "Check every local git repo at once: sync state against the live remote, unpushed commits, stale merged branches, and staged secrets or SSH logs. Produces a per-repo report with ready-to-run, shell-correct ship commands, then executes pushes and branch cleanups after explicit confirmation. Use on \"fleet health\", \"check all my repos\", \"what's unpushed\", \"clean up stale branches\"."
 ---
 
 # Fleet health
 
-Cross-repo audit. Read-only until the user confirms, then it ships.
+Cross-repo health check. Read-only until the user confirms, then it ships.
 
 ## Stage 0: discover
+
+On Windows, in PowerShell:
 
 ```powershell
 Get-ChildItem -Path $HOME -Directory -Recurse -Force -Filter ".git" -Depth 4 -ErrorAction SilentlyContinue |
   Select-Object -ExpandProperty FullName
 ```
 
-Drop anything under `AppData`, `Temp`, `node_modules`, or `.venv`. Those are
-build artifacts and scratch clones, not fleet.
+On Linux and macOS, in bash:
+
+```bash
+find ~ -maxdepth 5 -type d -name .git -prune -print 2>/dev/null
+```
+
+Drop anything under `AppData`, `Temp`, `.cache`, `node_modules`, or `.venv`.
+Those are build artifacts and scratch clones, not fleet.
 
 ## Stage 1: never trust the working directory
 
@@ -63,6 +71,12 @@ $pat = 'BEGIN [A-Z ]*PRIVATE KEY|ssh-rsa AAAA|AKIA[0-9A-Z]{16}|ghp_[A-Za-z0-9]{2
 Select-String -Path $p -Pattern $pat -AllMatches
 ```
 
+In bash, put the same pattern in `$pat` with single quotes and run
+`rg -n -e "$pat" -- <files>`. Use ripgrep, not grep. ripgrep decodes UTF-16
+files that start with a byte order mark, and grep misses a secret in them. If
+`rg` is not installed, use `grep -nE "$pat" -- <files>` and report that
+UTF-16 files were not scanned.
+
 Separately flag filenames: `auth.log`, `secure`, `*.pem`, `*.key`, `id_rsa`,
 `known_hosts`, `.env`. A homelab repo will legitimately contain sanitized log
 excerpts, so a filename hit is a question for the user, not an automatic block.
@@ -73,11 +87,10 @@ repo until the user resolves it.
 
 The report gives one copy-pasteable block per repo. Rules:
 
-**Match the user's shell.** The discovery commands in stages 0 to 3 are
-PowerShell. The ship commands go in the shell the user will paste them into,
-so ask the user which shell that is rather than assume. Checking
-`$PSVersionTable` from your own tool only tells you which shell the tool runs,
-not the one the user pastes into.
+**Match the user's shell.** The ship commands go in the shell the user will
+paste them into, so ask the user which shell that is rather than assume.
+Checking `$PSVersionTable` from your own tool only tells you which shell the
+tool runs, not the one the user pastes into.
 
 **Never mix shells.** A `\` line continuation is a bash-ism; in PowerShell it
 becomes a literal backslash inside the argument. PowerShell's continuation is a
@@ -87,12 +100,12 @@ backtick, but the fix is to not continue lines at all.
 `!` stay literal:
 
 ```powershell
-git -C <repo> commit -m 'add valuation and fee tests'
+git -C <abs-path> commit -m 'add valuation and fee tests'
 ```
 
 If a multi-line body is genuinely needed in PowerShell, use a single-quoted
-here-string with the closing `'@` at column 0. A bash heredoc does not work
-there.
+here-string with the closing `'@` at column 0, never a bash heredoc. In bash,
+use a quoted heredoc, `<<'EOF'`.
 
 **Bake the absolute path into every command.** `git -C <abs-path>` and nothing
 that depends on cwd.
@@ -111,5 +124,5 @@ Show the plan, wait for an explicit yes. Then:
 
 ## Output
 
-The deliverable is a self-contained HTML report in the OS temp dir, named
+The deliverable is a self-contained HTML report in the OS temp directory, named
 `fleet-health-<YYYY-MM-DD-HHMMSS>.html`, plus a chat summary table with the verdict.

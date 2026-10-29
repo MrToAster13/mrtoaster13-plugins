@@ -35,3 +35,10 @@ Nothing was pushed after the rule change. Earlier pushes this session were under
 - Do not touch hermes-plugin-claude-subscription-directsdk.
 - `Portfolio\node_modules` is empty. The audit ran `npm ci` inside a throwaway worktree and removed it afterward.
 - Remote branches `arch/pl-1-model-policy` and `arch/pl-2-config-store` still exist on origin. They were not deleted this session.
+
+## Update 2026-10-28, ELI-676
+
+- This branch was merged into main through the ELI-645 audit branch, so `docs/handoff-004` holds nothing main lacks.
+- The batch-run two-way port never reached a commit or a remote branch. No `port/batch-run-two-way` branch exists on origin in either repo. The two worktrees under `C:\Users\Elijah\AppData\Local\Temp` could not be checked: `ssh laptop` was refused on 2026-10-28, so whether they still exist is unverified. Treat that work as abandoned.
+- ELI-676 took over one part of it: `slug_for` in claude-config now tags uppercase ids and the `batch-config` stem the way this copy does, and `tests/test_cross_copy.py` in both repos resumes a checkpoint the other copy wrote. The rest of the port (strict JSON parsing, the steal guard, `estimate.py` checks one way; pl-1, pl-2, Windows sharing retries the other) is still open and listed as a fork in claude-config `bin/shared-skills.json`.
+- claude-config now maintains the shared skills. `bin/sync-shared-skills.py` there writes the copies it lists, which is `fleet-health` in this repo so far, and `.github/workflows/shared-skills.yml` here fails when a generated file is edited by hand.

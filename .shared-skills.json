@@ -1,0 +1,11 @@
+{
+  "dirs": [
+    "plugins/autonomous-workflows/skills/fleet-health"
+  ],
+  "files": {
+    ".github/check-shared-skills.py": "5b06db88641abf406a06e5077d05e261aeea2d9b9ffdb0afd27b6fd87ca8de48",
+    ".github/workflows/shared-skills.yml": "ca1c3eb9f39f83da74dc2b6272b7c15578b9201918838795cb55b2d513ef876c",
+    "plugins/autonomous-workflows/skills/fleet-health/SKILL.md": "654cd5f42b6d5a0ad5eb75d1fc2a3aea8aa6e24fdf913da32d42c298ff0b2dc2"
+  },
+  "note": "Written by claude-config bin/sync-shared-skills.py. Edit the skills in claude-config, not here."
+}

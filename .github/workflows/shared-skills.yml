@@ -1,0 +1,17 @@
+# Written by claude-config bin/sync-shared-skills.py. Do not edit by hand.
+name: shared-skills
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  drift:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Shared skills match what claude-config generated
+        run: python .github/check-shared-skills.py
