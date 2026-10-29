@@ -1,6 +1,8 @@
 {
   "dirs": [
-    "plugins/autonomous-workflows/skills/fleet-health"
+    "plugins/autonomous-workflows/skills/factory",
+    "plugins/autonomous-workflows/skills/fleet-health",
+    "plugins/autonomous-workflows/skills/tdd-loop"
   ],
   "executable": [
     ".github/check-shared-skills.py"
@@ -8,7 +10,15 @@
   "files": {
     ".github/check-shared-skills.py": "5a4296fe471ea68e7f60b95d8131f31d9905e38e1a11193ab884690406ac85bc",
     ".github/workflows/shared-skills.yml": "ca1c3eb9f39f83da74dc2b6272b7c15578b9201918838795cb55b2d513ef876c",
-    "plugins/autonomous-workflows/skills/fleet-health/SKILL.md": "654cd5f42b6d5a0ad5eb75d1fc2a3aea8aa6e24fdf913da32d42c298ff0b2dc2"
+    "plugins/autonomous-workflows/skills/factory/SKILL.md": "786b187e0c94c80709bf7dae55217981639f69129301c55ccbde2bbf34acd683",
+    "plugins/autonomous-workflows/skills/factory/closing.md": "8cfdda11a7bb0aaed34d0b07f71aac1cf97321fa08f64579f9293f4cd8ff47a1",
+    "plugins/autonomous-workflows/skills/factory/ledger.md": "0432e9b8d07ab25482d995b2e599965c201f4a62efb502a15c3823736100b2ab",
+    "plugins/autonomous-workflows/skills/factory/scripts/preflight.py": "0a8b996ef0e55b1a01dfdf7244a20b0b31ac90802b2e759bb2f955adf79199fd",
+    "plugins/autonomous-workflows/skills/factory/team.md": "cffcbb6a92253ae1f23bfc8bf69fadf8aff6cd034b71ea415725c5a3da40170b",
+    "plugins/autonomous-workflows/skills/factory/tests/test_preflight.py": "320b17bba8b775e0875f11593b1f70b703365a7b49f5b868d9bbd3619cfdd396",
+    "plugins/autonomous-workflows/skills/fleet-health/SKILL.md": "654cd5f42b6d5a0ad5eb75d1fc2a3aea8aa6e24fdf913da32d42c298ff0b2dc2",
+    "plugins/autonomous-workflows/skills/tdd-loop/SKILL.md": "6a743ffac8f3e1b66dd16471a1c867b4538c4513103420ac7fb9ed9a0452dfd5",
+    "plugins/autonomous-workflows/skills/tdd-loop/adversarial-review.md": "059293c8e1d49ed710bc8e6083736b0839b7267034b5d06c71966ac13e79c729"
   },
   "note": "Written by claude-config bin/sync-shared-skills.py. Edit the skills in claude-config, not here."
 }

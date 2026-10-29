@@ -10,7 +10,7 @@ They run between human gates, not without them. You approve the plan; the agent 
 
 Takes an approved spec and builds it into a working MVP without you in the room. It runs `to-spec → to-tickets`, then builds each ticket with `tdd` and an adversary review, on a loop, orchestrating from your main session so the context never fills: the orchestrator holds only a ledger and one line summaries, and every piece of real work happens in a subagent whose context dies with it.
 
-The rule that makes it usable: **a blocker parks the ticket, it does not stop the run.** Anything reversible in an afternoon gets decided and logged. Anything that would waste work or ship something you did not agree to gets parked as a question, and everything not downstream of it keeps building. You are interrupted once, at the end, with every open question at the same time.
+The rule that makes it usable: **a blocker does not stop the run.** Anything reversible in an afternoon gets decided and logged. A harder blocker goes up a ladder of resolver agents first. Whatever survives the ladder gets a blocker ticket, and everything not downstream of it keeps building. You are interrupted once, at the end, with every open question at the same time.
 
 Ten agents run at once, counted across the whole tree. A wider frontier queues and feeds in the moment a slot frees, so the cap slows the run down instead of serialising it by design. Each ticket gets its own git worktree, its own branch, and an adversary pass on its diff before anything merges. Everything lands on one integration branch, and exactly one pull request is left for you to merge.
 

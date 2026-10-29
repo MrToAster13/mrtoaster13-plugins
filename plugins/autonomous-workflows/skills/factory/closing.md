@@ -1,16 +1,15 @@
 # Closing the loop
 
-Two audiences. GitHub gets the mechanics of the change. The ticket gets the narrative
-of the work. Neither gets a copy of the other.
+Two audiences. GitHub gets the mechanics of the change. The vault ticket gets the
+narrative of the work. Neither gets a copy of the other.
 
 ## PR body template
 
 Opened as a draft by the builder against the run's integration branch, marked
-ready by the integrator. Because the base is not the default branch, `Closes`
-will not auto close the ticket: the integrator closes it explicitly after the
-merge with `ticket.py status <KEY>-<n> Done`. Keep the reference anyway, it is
-what links the PR to the ticket, and add the PR to the ticket with
-`ticket.py set <KEY>-<n> prs <every existing PR> <url>`. `set` replaces the
+ready by the integrator. Nothing auto closes a vault ticket: the integrator
+closes it explicitly after the merge with `ticket.py status <KEY>-<n> Done`. Keep
+the `Closes` line anyway, it names the ticket in the PR, and add the PR to the
+ticket with `ticket.py set <KEY>-<n> prs <every existing PR> <url>`. `set` replaces the
 whole list, so pass the PRs already on the ticket too.
 
 ```markdown
@@ -58,6 +57,7 @@ attribution line the session's harness specifies.
 **Approved once in Phase 0, then used unedited for the whole run.** Agents fill
 it in and post without further approval. Anything that does not fit this shape
 gets drafted for the user in the normal way.
+Post a filled copy with `ticket.py comment <KEY>-<n> --body-file <file>`.
 
 ```markdown
 **Shipped** via [#<pr>](<pr url>) on `<branch>`.
@@ -71,16 +71,43 @@ gets drafted for the user in the normal way.
 Unblocks: <KEY-nnn, KEY-nnn, or "nothing">
 ```
 
-For a parked ticket, the same comment slot gets this instead, and the ticket stays
+For a blocked ticket, the same comment slot gets this instead, and the ticket stays
 in its current state rather than moving to Done:
 
 ```markdown
-**Parked** pending a decision.
+**Blocked** by <KEY-nnn>, filed with the question, the options, and everything
+the run tried before filing it.
 
 <the question, in one line.>
 
-Work completed before parking: <what landed, or "none, parked before any code">.
-Blocks: <KEY-nnn, KEY-nnn>
+Work completed before blocking: <what landed, or "none, blocked before any code">.
+Blocks: <KEY-nnn, KEY-nnn, or "nothing">
+```
+
+## The blocker ticket body
+
+Approved once in Phase 0, then filed unedited.
+One new ticket in the same project per blocked question
+(`ticket.py new --title "<title>" --project "<project>" --body-file <file>`),
+linked as a blocker of the stopped ticket
+(`ticket.py relate <KEY>-stopped blocked_by <KEY>-blocker`).
+
+```markdown
+Title: <the question, one line>
+
+**What is unresolved:** <two sentences, no more>
+
+**Options:** <a> / <b> / <c>
+
+**Recommendation:** <one of them>, because <one line>.
+
+**Tried before filing this:**
+
+- Attempts (in order): <one line each, what was tried and what came back. The
+  last line is the resolver's UNRESOLVED report, verbatim.>
+
+**Blocks:** <KEY-nnn>
+**Work completed first:** <branch and PR, or "none">
 ```
 
 ## The MVP bar
@@ -114,3 +141,21 @@ The target is a prototype that reads as a polished v3 and scopes as a v0.1.
   next run, and `factory-polish` files it rather than building it.
 
 The line: polish makes what exists look deliberate. It never makes there be more.
+
+**The bar above assumes a greenfield prototype. On an existing codebase it is
+wrong, and applying it whole is how a run ends by rewriting a README nobody asked
+it to touch.** A mature repo already made its choices about visual system, README,
+and seed data, and the factory did not earn the right to revisit them by merging
+four small tickets into it.
+
+So on an existing repo, cut the brief down before spawning polish:
+
+- **Restrict it to the files this run actually touched.** Name them in the brief.
+  Everything else is out of bounds, however rough it looks.
+- **No features, no new files, no dependency, no ticket writes.** Out of scope
+  ideas come back as proposed tickets in its report, for the user to decide. It
+  files nothing itself.
+- **Say in the brief that finding nothing is a correct outcome.** Otherwise it
+  will find something to justify its existence, and on a clean diff that means
+  inventing work. A polish pass that reports "nothing to polish" and names what it
+  checked has done its job.
