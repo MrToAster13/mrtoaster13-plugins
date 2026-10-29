@@ -5,7 +5,7 @@ Status: paused. The batch-run port needs a ticket with acceptance criteria befor
 ## Goal
 Elijah answered "dealers choice" to the two questions at the end of handoff 003. This session picked:
 - (a) a1 with "port yes". claude-config owns the six shared skills. This repo keeps a hand-ported public copy, and batch-run gets ported in both directions now.
-- ELI-388: "388 branch". Use Mini's branch `origin/eli-388-sell-ai-setup` (5ae356c) in `C:\Users\Elijah\Portfolio`. Do not merge it until Elijah approves the copy.
+- ELI-388: "388 branch". Use Mini's branch `origin/eli-388-sell-ai-setup` (5ae356c) in the Portfolio repo. Do not merge it until Elijah approves the copy.
 
 ## Rule change mid-session (2026-10-21)
 Elijah replaced the audit-then-push loop:
@@ -19,8 +19,8 @@ Nothing was pushed after the rule change. Earlier pushes this session were under
 ## What happened
 - The batch-run port agent was stopped partway. It was not running tdd-loop, and the port has no ticket, so it has no acceptance criteria.
 - The partial work sits uncommitted in two worktrees:
-  - `C:\Users\Elijah\AppData\Local\Temp\wt-pl-port`, branch `port/batch-run-two-way` off faa769d. 7 files, +446/-82.
-  - `C:\Users\Elijah\AppData\Local\Temp\wt-cc-port`, claude-config branch `port/batch-run-two-way` off 94a4981. 7 files, +1978/-649. The large count is likely CRLF churn; this is unverified.
+  - A local worktree of this repo, branch `port/batch-run-two-way` off faa769d. 7 files, +446/-82.
+  - A local worktree of claude-config, branch `port/batch-run-two-way` off 94a4981. 7 files, +1978/-649. The large count is likely CRLF churn; this is unverified.
   - The batch-run tests pass in both: 305 passed, 0 failed (main has 239). No adversarial review or security stage has run on it, so treat it as a draft.
   - ADR 0009 and the README ownership line were not written.
 - ELI-388: an Opus agent audited 5ae356c read-only. The build passes. Two must-fix items: the "his own skills" / "I write my own skills" claim cites a source that ELI-53 retracted, and site.ts:522 says "his" in otherwise first-person copy. The full findings are in a comment on ELI-388 (vault commit 3aff94d). No PR was opened.
@@ -33,12 +33,12 @@ Nothing was pushed after the rule change. Earlier pushes this session were under
 
 ## Gotchas
 - Do not touch hermes-plugin-claude-subscription-directsdk.
-- `Portfolio\node_modules` is empty. The audit ran `npm ci` inside a throwaway worktree and removed it afterward.
+- The Portfolio repo's `node_modules` is empty. The audit ran `npm ci` inside a throwaway worktree and removed it afterward.
 - Remote branches `arch/pl-1-model-policy` and `arch/pl-2-config-store` still exist on origin. They were not deleted this session.
 
 ## Update 2026-10-28, ELI-676
 
 - This branch was merged into main through the ELI-645 audit branch, so `docs/handoff-004` holds nothing main lacks.
-- The batch-run two-way port never reached a commit or a remote branch. No `port/batch-run-two-way` branch exists on origin in either repo. The two worktrees under `C:\Users\Elijah\AppData\Local\Temp` could not be checked: `ssh laptop` was refused on 2026-10-28, so whether they still exist is unverified. Treat that work as abandoned.
+- The batch-run two-way port never reached a commit or a remote branch. No `port/batch-run-two-way` branch exists on origin in either repo. The two local worktrees could not be checked from the audit host on 2026-10-28, so whether they still exist is unverified. Treat that work as abandoned.
 - ELI-676 took over one part of it: `slug_for` in claude-config now tags uppercase ids and the `batch-config` stem the way this copy does, and `tests/test_cross_copy.py` in both repos resumes a checkpoint the other copy wrote. The rest of the port (strict JSON parsing, the steal guard, `estimate.py` checks one way; pl-1, pl-2, Windows sharing retries the other) is still open and listed as a fork in claude-config `bin/shared-skills.json`.
 - claude-config now maintains the shared skills. `bin/sync-shared-skills.py` there writes the copies it lists, which is `fleet-health` in this repo so far, and `.github/workflows/shared-skills.yml` here fails when a generated file is edited by hand.
