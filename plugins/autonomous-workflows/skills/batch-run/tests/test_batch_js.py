@@ -542,3 +542,10 @@ def test_the_failures_cli_output_feeds_batch_js_as_prior_failures(tmp_path):
                        priorFailures=json.loads(out.stdout.decode()))
     assert len(run["prompts"]) == 2
     assert "missing date" in run["prompts"][0]
+
+
+def test_a_zero_max_attempts_reports_no_attempt_not_a_cap():
+    # Review finding B3. No rejection happened, so the reason must not claim one.
+    run = rejected_run([{"id": "a"}], maxAttempts=0)
+    assert run["prompts"] == []
+    assert run["result"]["failed"] == [{"id": "a", "reason": "no attempt completed"}]
