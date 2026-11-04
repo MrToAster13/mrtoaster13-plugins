@@ -7,19 +7,43 @@ description: "Check every local git repo at once: sync state against the live re
 
 Cross-repo health check. Read-only until the user confirms, then it ships.
 
+## Report-only mode
+
+Use this when the user wants to know what sits only on this machine, has no
+network, or asked for a report and nothing else. It runs no fetch and changes
+no ref, branch, file or setting:
+
+```bash
+python <skill-dir>/scripts/fleet_report.py            # table
+python <skill-dir>/scripts/fleet_report.py --json     # same data as JSON
+```
+
+`--root PATH` (repeatable) narrows the scan, `--max-depth N` (default 6)
+sets how deep it looks, and `--home PATH` sets where to look for leftover
+folders. A repo git cannot read is flagged with an error, not shown as clean. Per repo it gives origin URL, branch, dirty count,
+commits on no remote (`git rev-list --count HEAD --not --remotes`, which also
+catches branches with no upstream), stash count, `git worktree list` entries,
+the repo's own default (`refs/remotes/origin/HEAD`) and branches merged into
+it. It groups directories that share one origin URL and lists `*-backup-*`
+and `*-test-run*` folders under home with no `.git`. Stop after the report.
+Every cleanup it suggests needs its own yes, per row. The script's tests are
+in `tests/test_fleet_report.py`.
+
 ## Stage 0: discover
+
+The `.git` of a linked worktree is a file, not a directory, so match both.
 
 On Windows, in PowerShell:
 
 ```powershell
-Get-ChildItem -Path $HOME -Directory -Recurse -Force -Filter ".git" -Depth 4 -ErrorAction SilentlyContinue |
+Get-ChildItem -Path $HOME -Recurse -Force -Filter ".git" -Depth 4 -ErrorAction SilentlyContinue |
   Select-Object -ExpandProperty FullName
 ```
 
 On Linux and macOS, in bash:
 
 ```bash
-find ~ -maxdepth 5 -type d -name .git -prune -print 2>/dev/null
+find ~ -maxdepth 5 -name .git -prune -print 2>/dev/null
 ```
 
 Drop anything under `AppData`, `Temp`, `.cache`, `node_modules`, or `.venv`.
@@ -57,8 +81,9 @@ Collect per repo:
 - **dirty**: `M `/` M`/`??` lines from porcelain
 - **unpushed**: `git -C $r log --oneline @{u}..HEAD` on each tracking branch
 - **behind**: `[behind N]` in the track field
-- **stale merged**: `git -C $r branch --merged origin/main`, minus the current
-  branch and minus `main`/`master` itself
+- **stale merged**: `git -C $r branch --merged $d`, where `$d` is the repo's
+  own default from `git -C $r symbolic-ref --short refs/remotes/origin/HEAD`
+  (not always `origin/main`), minus the current branch and the default itself
 - **gone upstream**: track field contains `gone`
 
 ## Stage 3: secret and SSH-log scan
