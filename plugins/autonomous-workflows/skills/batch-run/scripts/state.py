@@ -20,11 +20,12 @@ This module owns that file's name, reads and writes, and keeps every unit
 record off it. estimate.py owns what goes in it.
 
 CLI:
-    python state.py todo    --units units.json --dir checkpoint [--limit N]
+    python state.py todo    --units units.json --dir checkpoint [--limit N] [--max-attempts 2]
+    python state.py failures --units units.json --dir checkpoint
     python state.py record  --dir checkpoint --id ID --status verified [...]
     python state.py report  --units units.json --dir checkpoint [--strict]
-    python state.py claim   --dir checkpoint --id ID [--lease-seconds 1800]
-    python state.py release --dir checkpoint --id ID
+    python state.py claim   --dir checkpoint --id ID [--lease-seconds 1800] [--owner OWNER]
+    python state.py release --dir checkpoint --id ID [--owner OWNER]
 """
 
 from __future__ import annotations
@@ -43,6 +44,9 @@ from pathlib import Path
 STATUSES = ("pending", "written", "verified", "failed")
 DONE = "verified"
 DEFAULT_LEASE_SECONDS = 1800
+# How many verifier rejections a unit may collect, across every run, before
+# todo leaves it out. Matches maxAttempts in workflows/batch.js.
+DEFAULT_MAX_ATTEMPTS = 2
 # Seconds to wait between tries when Windows reports the file is in use.
 SHARING_RETRY_DELAYS = (0.01, 0.02, 0.04, 0.08)
 
@@ -195,10 +199,16 @@ def record(checkpoint_dir, unit_id, status, artifact=None, reason=None, worker=N
     attempt = prior.get("attempt", 0)
     if status in ("written", "failed"):
         attempt = attempt + 1
+    # `attempt` counts both the writer's `written` and the verifier's `failed`,
+    # so one rejected pair adds 2. `failures` counts verifier rejections only,
+    # once each, and is what the attempt cap reads. claude-config's copy writes
+    # the same field, so a batch resumed under either copy keeps its count.
+    failures = failure_count(prior) + (1 if status == "failed" else 0)
     payload = {
         "unit_id": unit_id,
         "status": status,
         "attempt": attempt,
+        "failures": failures,
         "updated_at": now_iso(),
     }
     for key, value in (("artifact", artifact), ("reason", reason), ("worker", worker)):
@@ -213,8 +223,23 @@ def record(checkpoint_dir, unit_id, status, artifact=None, reason=None, worker=N
     for key in ("artifact", "worker"):
         if key not in payload and key in prior:
             payload[key] = prior[key]
+    # The last rejection's reason does outlive a retry's `written`: a resumed
+    # writer needs it, and `failures` hands it to batch.js.
+    if status == "failed" and reason is not None:
+        payload["last_rejection"] = reason
+    elif "last_rejection" in prior:
+        payload["last_rejection"] = prior["last_rejection"]
     _atomic_write_json(record_path(checkpoint_dir, unit_id), payload)
     return payload
+
+
+def failure_count(rec):
+    """The record's count of verifier rejections. Anything but a whole number
+    of zero or more, such as a hand-edited string, reads as 0."""
+    value = (rec or {}).get("failures", 0)
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        return 0
+    return value
 
 
 def load_units(units_path):
@@ -243,12 +268,54 @@ def reduce_dir(checkpoint_dir, units):
     return state
 
 
-def todo(checkpoint_dir, units, limit=None):
-    state = reduce_dir(checkpoint_dir, units)
-    pending = [u for u in units if state[u["id"]] != DONE]
+def _check_cap(max_attempts):
+    if isinstance(max_attempts, bool) or not isinstance(max_attempts, int) or max_attempts < 1:
+        raise ValueError("max_attempts must be a whole number of at least 1")
+
+
+def _unfinished(checkpoint_dir, units):
+    """Yield (unit, record or None) for every unit that is not verified."""
+    for unit in units:
+        rec = read_record(checkpoint_dir, unit["id"])
+        if not rec or rec["status"] != DONE:
+            yield unit, rec
+
+
+def capped(checkpoint_dir, units, max_attempts=DEFAULT_MAX_ATTEMPTS):
+    """Units that are not verified and have max_attempts or more rejections."""
+    _check_cap(max_attempts)
+    return [u for u, rec in _unfinished(checkpoint_dir, units) if failure_count(rec) >= max_attempts]
+
+
+def todo(checkpoint_dir, units, limit=None, max_attempts=DEFAULT_MAX_ATTEMPTS):
+    """Units that are not verified and still under the attempt cap.
+
+    A unit the verifier rejected max_attempts times, across every run, is
+    left out; `capped` lists those. Raise the cap or delete the unit's record
+    to run it again.
+    """
+    _check_cap(max_attempts)
+    pending = [u for u, rec in _unfinished(checkpoint_dir, units) if failure_count(rec) < max_attempts]
     if limit is not None:
         pending = pending[:limit]
     return pending
+
+
+def failure_counts(checkpoint_dir, units):
+    """{id: {"failures": n, "reason": text}} for unfinished units with a
+    rejection on record. batch.js takes this as priorFailures, so a resumed
+    unit continues its attempt count instead of starting at 1. The reason is
+    the last rejection's, or None if none was recorded.
+    """
+    out = {}
+    for unit, rec in _unfinished(checkpoint_dir, units):
+        count = failure_count(rec)
+        if count:
+            reason = rec.get("reason") if rec["status"] == "failed" else rec.get("last_rejection")
+            if not isinstance(reason, str):
+                reason = None
+            out[unit["id"]] = {"failures": count, "reason": reason}
+    return out
 
 
 def report(checkpoint_dir, units):
@@ -294,7 +361,9 @@ def claim(checkpoint_dir, unit_id, lease_seconds=DEFAULT_LEASE_SECONDS, owner=No
     """
     path = lock_path(checkpoint_dir, unit_id)
     path.parent.mkdir(parents=True, exist_ok=True)
-    body = json.dumps({"owner": owner or str(os.getpid()), "at": time.time()})
+    # An owner is stored as given, as a string, so release can name it. Only
+    # a missing owner falls back to the pid.
+    body = json.dumps({"owner": str(os.getpid()) if owner is None else str(owner), "at": time.time()})
     flags = os.O_CREAT | os.O_EXCL | os.O_WRONLY
 
     def create():
@@ -327,14 +396,71 @@ def claim(checkpoint_dir, unit_id, lease_seconds=DEFAULT_LEASE_SECONDS, owner=No
     return True
 
 
-def release(checkpoint_dir, unit_id):
-    """Drop a unit's lease. Returns True if this call removed the lock file,
-    and False if there was no lock file or it could not be removed."""
+def _identity(st):
+    return (st.st_dev, st.st_ino, st.st_mtime_ns, st.st_size)
+
+
+def _lock_owner(path):
+    """Read the lock at path. Returns (identity, owner), or None if unreadable.
+
+    The identity is taken before the read. The caller compares it with a
+    second stat after the read, so a file swapped in between is caught.
+    """
     try:
-        os.unlink(str(lock_path(checkpoint_dir, unit_id)))
-        return True
+        seen = _identity(os.stat(str(path)))
+        with open(str(path), "r", encoding="utf-8") as fh:
+            body = fh.read()
+    except (OSError, ValueError):
+        return None
+    try:
+        data = json.loads(body)
+    except (ValueError, RecursionError):
+        return None
+    owner = data.get("owner") if isinstance(data, dict) else None
+    return (seen, owner) if isinstance(owner, str) else None
+
+
+def release(checkpoint_dir, unit_id, owner=None):
+    """Drop a unit's lease. Returns True if this call removed the lock file.
+
+    With an owner, the lock goes only if its owner field matches, compared as
+    a string the way claim stores it. A holder whose stale lease was stolen
+    then leaves the thief's lock alone, so a third run cannot claim a unit the
+    thief is still working on. The release reads the lock, compares the
+    owner, checks the lock is still that same file (inode, file time, size),
+    and only then deletes it.
+
+    This copy's claim deletes a stale lock without the steal guard
+    claude-config's copy takes, so a steal that lands in the moment between
+    that check and the delete can still lose its fresh lock. That is the same
+    race claim already documents for two stealers, and it needs a lease that
+    ran out while its holder was finishing.
+
+    Without an owner, the lock goes whoever holds it, as before ELI-917. That
+    keeps old callers working and keeps the bug for them, so pass the owner
+    you claimed with.
+
+    Returns False if there was no lock file, the owner did not match, the
+    lock is mid-write or unreadable, it changed between the read and the
+    delete, or the file could not be removed.
+    """
+    path = lock_path(checkpoint_dir, unit_id)
+    if owner is None:
+        try:
+            os.unlink(str(path))
+            return True
+        except OSError:
+            return False
+    read = _lock_owner(path)
+    if read is None or read[1] != str(owner):
+        return False
+    try:
+        if _identity(os.stat(str(path))) != read[0]:
+            return False
+        os.unlink(str(path))
     except OSError:
         return False
+    return True
 
 
 def _main(argv=None):
@@ -349,6 +475,12 @@ def _main(argv=None):
     add_dir(p_todo)
     p_todo.add_argument("--units", required=True)
     p_todo.add_argument("--limit", type=_at_least(0), default=None)
+    p_todo.add_argument("--max-attempts", type=_at_least(1), default=DEFAULT_MAX_ATTEMPTS,
+                        help="leave out units the verifier rejected this many times (default %(default)s)")
+
+    p_fail = sub.add_parser("failures", help="print rejection counts of unfinished units")
+    add_dir(p_fail)
+    p_fail.add_argument("--units", required=True)
 
     p_rec = sub.add_parser("record", help="write one unit's status")
     add_dir(p_rec)
@@ -373,11 +505,22 @@ def _main(argv=None):
     p_rel = sub.add_parser("release", help="drop a lease")
     add_dir(p_rel)
     p_rel.add_argument("--id", required=True)
+    p_rel.add_argument("--owner", default=None,
+                       help="remove the lock only if this owner holds it (pass the owner you claimed with)")
 
     args = parser.parse_args(argv)
 
     if args.command == "todo":
-        print(json.dumps(todo(args.dir, load_units(args.units), args.limit), indent=2))
+        units = load_units(args.units)
+        print(json.dumps(todo(args.dir, units, args.limit, args.max_attempts), indent=2))
+        skipped = [u["id"] for u in capped(args.dir, units, args.max_attempts)]
+        if skipped:
+            print("skipped {} unit(s) the verifier rejected {} or more times: {}. Fix the spec, then "
+                  "rerun with a higher --max-attempts or delete their records.".format(
+                      len(skipped), args.max_attempts, ", ".join(skipped)), file=sys.stderr)
+        return 0
+    if args.command == "failures":
+        print(json.dumps(failure_counts(args.dir, load_units(args.units)), indent=2))
         return 0
     if args.command == "record":
         print(json.dumps(record(args.dir, args.id, args.status, args.artifact,
@@ -397,14 +540,15 @@ def _main(argv=None):
         print("claimed" if won else "held-by-another")
         return 0 if won else 1
     if args.command == "release":
-        if release(args.dir, args.id):
+        if release(args.dir, args.id, args.owner):
             print("released")
             return 0
         # Exit 4: not 1 (held), 2 (argparse's usage error) or 3 (claim's
-        # cannot-create). The lease may have been stolen, or the lock is
-        # still there and blocks every other claimant until it goes stale.
-        print("cannot release {}: no lock file there, or it could not be removed".format(
-            lock_path(args.dir, args.id)), file=sys.stderr)
+        # cannot-create). The lease may have been stolen (another owner's
+        # lock, which stays, or no lock at all), or the lock is still there
+        # and blocks every other claimant until it goes stale.
+        print("cannot release {}: no lock file there, another owner holds it, or it could not be "
+              "removed".format(lock_path(args.dir, args.id)), file=sys.stderr)
         return 4
     return 2
 
