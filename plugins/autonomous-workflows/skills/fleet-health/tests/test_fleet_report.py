@@ -371,3 +371,128 @@ def test_security_credentials_in_the_origin_url_are_not_reported(tmp_path):
 
     assert "s3cretvalue" not in json.dumps(r)
     assert r["origin"] == "https://github.com/o/r.git"
+
+
+# Regression tests for the ELI-1043 verifier findings on PR #17.
+
+def test_eli1043_f1_partial_clone_is_not_fetched_and_shows_an_error(tmp_path, monkeypatch):
+    seed = tmp_path / "seed"
+    seed.mkdir()
+    git(seed, "init", "-q")
+    commit(seed, "a.txt", "".join("%d\n" % i for i in range(50)))
+    remote = tmp_path / "remote.git"
+    subprocess.run(["git", "clone", "-q", "--bare", str(seed), str(remote)], check=True)
+    git(remote, "config", "uploadpack.allowfilter", "true")
+    home = tmp_path / "home"
+    home.mkdir()
+    repo = home / "pc"
+    monkeypatch.setenv("GIT_NO_LAZY_FETCH", "1")
+    subprocess.run(["git", "clone", "-q", "--no-checkout", "--filter=blob:none",
+                    remote.as_uri(), str(repo)], check=True)
+    git(repo, "read-tree", "HEAD")
+    (repo / "b.txt").write_text("".join("%d\n" % i for i in range(51)))
+    git(repo, "add", "b.txt")
+    git(repo, "rm", "-q", "--cached", "a.txt")
+    monkeypatch.delenv("GIT_NO_LAZY_FETCH")
+    before = tree_digest(repo)
+
+    r = fleet_report.repo_report(repo)
+
+    assert tree_digest(repo) == before
+    assert r["error"]
+
+
+def test_eli1043_f2_a_failing_git_status_is_an_error_not_clean(tmp_path):
+    repo = tmp_path / "badindex"
+    repo.mkdir()
+    git(repo, "init", "-q")
+    commit(repo, "a.txt")
+    (repo / "untracked.txt").write_text("u")
+    (repo / ".git" / "index").write_bytes(b"not an index")
+
+    r = fleet_report.repo_report(repo)
+
+    assert r["error"]
+
+
+def test_eli1043_f2_a_failing_rev_list_is_an_error_not_clean(tmp_path):
+    repo = tmp_path / "noparent"
+    repo.mkdir()
+    git(repo, "init", "-q")
+    commit(repo, "a.txt")
+    first = git(repo, "rev-parse", "HEAD")
+    commit(repo, "b.txt")
+    (repo / ".git" / "objects" / first[:2] / first[2:]).unlink()
+
+    r = fleet_report.repo_report(repo)
+
+    assert r["error"]
+
+
+def test_eli1043_f2_an_empty_git_dir_inside_another_repo_is_an_error(tmp_path):
+    parent = tmp_path / "parent"
+    parent.mkdir()
+    git(parent, "init", "-q")
+    commit(parent, "a.txt")
+    child = parent / "child"
+    (child / ".git").mkdir(parents=True)
+
+    r = fleet_report.repo_report(child)
+
+    assert r["error"]
+
+
+def test_eli1043_f3_a_password_with_a_literal_at_sign_is_not_printed(tmp_path):
+    repo = tmp_path / "cred2"
+    repo.mkdir()
+    git(repo, "init", "-q")
+    git(repo, "remote", "add", "origin", "https://user:p@ss@github.com/o/r.git")
+
+    r = fleet_report.repo_report(repo)
+
+    assert r["origin"] == "https://github.com/o/r.git"
+
+
+def test_eli1043_f4_a_dangling_origin_head_falls_back_to_a_real_default(tmp_path):
+    remote = bare_remote(tmp_path, branch="master")
+    seed = clone(remote, tmp_path / "seed3")
+    git(seed, "switch", "-q", "-c", "main")
+    commit(seed, "main-only.txt")
+    git(seed, "push", "-q", "origin", "main")
+    repo = clone(remote, tmp_path / "home" / "dangle")
+    git(repo, "branch", "merged-old")
+    git(repo, "update-ref", "-d", "refs/remotes/origin/master")
+
+    r = fleet_report.repo_report(repo)
+
+    assert r["default"] == "origin/main"
+    assert "merged-old" in r["stale_merged"]
+
+
+def test_eli1043_f5_local_only_commits_on_another_branch_are_counted(tmp_path):
+    remote = bare_remote(tmp_path)
+    repo = clone(remote, tmp_path / "home" / "side")
+    git(repo, "switch", "-q", "-c", "feature")
+    commit(repo, "only-here.txt")
+    git(repo, "switch", "-q", "master")
+
+    r = fleet_report.repo_report(repo)
+
+    assert r["no_remote"] == 1
+
+
+@pytest.mark.parametrize("a, b", [
+    ("ssh://git@github.com:22/o/r.git", "git@github.com:o/r.git"),
+    ("https://github.com:443/o/r.git", "https://github.com/o/r"),
+])
+def test_eli1043_f6_default_ports_normalize_away(a, b):
+    assert fleet_report.normalize_origin(a) == fleet_report.normalize_origin(b)
+
+
+def test_eli1043_f7_a_missing_root_exits_2(tmp_path):
+    missing = tmp_path / "no-such-dir"
+
+    with pytest.raises(SystemExit) as exc:
+        fleet_report.main(["--root", str(missing), "--home", str(missing)])
+
+    assert exc.value.code == 2
