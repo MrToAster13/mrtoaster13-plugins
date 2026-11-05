@@ -37,8 +37,8 @@
     "plugins/autonomous-workflows/skills/factory/team.md": "cffcbb6a92253ae1f23bfc8bf69fadf8aff6cd034b71ea415725c5a3da40170b",
     "plugins/autonomous-workflows/skills/factory/tests/test_preflight.py": "19eba68952fee64392b2d2a9b7d4156ddc9b6a483bb8f674ce2b735af429235e",
     "plugins/autonomous-workflows/skills/fleet-health/SKILL.md": "9b34173d90460963a250d2e06d7dd580424e657b4c1c58059e2143725cf2b3a9",
-    "plugins/autonomous-workflows/skills/fleet-health/scripts/fleet_report.py": "903e30fbcd94c5c8dcd4988e554cac8548d273c340deb43684c209452fdd2edd",
-    "plugins/autonomous-workflows/skills/fleet-health/tests/test_fleet_report.py": "a89b24078be1c847c1fc3e56e0c2e0c43a3c03c381ff470b535a0d3f4454655d",
+    "plugins/autonomous-workflows/skills/fleet-health/scripts/fleet_report.py": "bbc3da07aeef4e76ab431fb7e3d181b15135e5aff8e09e6c07bd0fe9153fed17",
+    "plugins/autonomous-workflows/skills/fleet-health/tests/test_fleet_report.py": "3c4f86943298b9cb68beb32a3577872830a6a37b3174145929ffa6e73e10a153",
     "plugins/autonomous-workflows/skills/tdd-loop/SKILL.md": "6a743ffac8f3e1b66dd16471a1c867b4538c4513103420ac7fb9ed9a0452dfd5",
     "plugins/autonomous-workflows/skills/tdd-loop/adversarial-review.md": "059293c8e1d49ed710bc8e6083736b0839b7267034b5d06c71966ac13e79c729"
   },

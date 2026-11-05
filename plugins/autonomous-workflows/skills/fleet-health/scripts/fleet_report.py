@@ -71,6 +71,19 @@ def _git(path, *args, config=()):
     return out.stdout
 
 
+def _real(p):
+    """p with symlinks resolved, or None when it cannot be, such as a symlink
+    loop, which Python 3.12 and older raise RuntimeError for."""
+    try:
+        return Path(p).resolve()
+    except (OSError, RuntimeError):
+        return None
+
+
+def _key(p):
+    return os.path.normcase(str(_real(p) or os.path.abspath(str(p))))
+
+
 def discover(roots, max_depth=MAX_DEPTH):
     """Repo dirs under roots: any dir holding a `.git` dir or `.git` file."""
     found = []
@@ -86,7 +99,7 @@ def discover(roots, max_depth=MAX_DEPTH):
                 continue
             names = {e.name for e in entries}
             if ".git" in names:
-                k = os.path.normcase(str(d.resolve()))
+                k = _key(d)
                 if k not in seen:
                     seen.add(k)
                     found.append(d)
@@ -103,7 +116,7 @@ def discover(roots, max_depth=MAX_DEPTH):
                 if e.name.lower() in SKIP_DIRS:
                     # A repo may itself be named tmp or venv. Check it, do not descend.
                     if os.path.lexists(os.path.join(e.path, ".git")):
-                        k = os.path.normcase(str(Path(e.path).resolve()))
+                        k = _key(e.path)
                         if k not in seen:
                             seen.add(k)
                             found.append(Path(e.path))
@@ -171,7 +184,7 @@ def _no_filters(path):
 
 
 def _same_dir(a, b):
-    return os.path.normcase(str(Path(a).resolve())) == os.path.normcase(str(Path(b).resolve()))
+    return _key(a) == _key(b)
 
 
 def repo_report(path):
@@ -315,9 +328,9 @@ def _submodules(path):
     """Checked-out submodule dirs of path, from the gitlinks in its index.
     A gitlink that resolves outside path, through a symlink or .., is skipped."""
     out = _git(path, "ls-files", "--stage", "-z") or ""
-    top = Path(path).resolve()
+    top = _real(path)
     subs = [Path(path) / e.split("\t", 1)[1] for e in out.split("\0") if e.startswith("160000 ")]
-    return [d for d in subs if top in d.resolve().parents
+    return [d for d in subs if top is not None and _real(d) is not None and top in _real(d).parents
             and os.path.lexists(os.path.join(str(d), ".git"))]
 
 
@@ -325,13 +338,13 @@ def build_report(roots, home, max_depth=MAX_DEPTH):
     # Status stays out of submodules, so every submodule needs its own row,
     # including ones too deep or under a skipped folder for discover to find.
     queue = list(discover(roots, max_depth))
-    seen = {os.path.normcase(str(Path(p).resolve())) for p in queue}
+    seen = {_key(p) for p in queue}
     repos = []
     while queue:
         path = queue.pop(0)
         repos.append(repo_report(path))
         for sub in _submodules(path):
-            k = os.path.normcase(str(sub.resolve()))
+            k = _key(sub)
             if k not in seen:
                 seen.add(k)
                 queue.append(sub)
@@ -340,20 +353,26 @@ def build_report(roots, home, max_depth=MAX_DEPTH):
             "leftovers": leftover_folders(home)}
 
 
+def _show(value):
+    """value as text, with C0 and C1 control characters written as \\uXXXX
+    the way --json writes them, so a path cannot hide rows on a terminal."""
+    return re.sub(r"[\x00-\x1f\x7f-\x9f]", lambda m: "\\u%04x" % ord(m.group()), str(value))
+
+
 def _text(report):
     rows = ["path | branch | dirty | no remote | stashes | worktrees | default | stale merged | origin"]
     for r in report["repos"]:
-        rows.append(" | ".join(str(x) for x in (
+        rows.append(" | ".join(_show(x) for x in (
             r["path"], r["branch"], r["dirty"], r["no_remote"], r["stashes"],
             len(r["worktrees"]), r["default"] or "-", ",".join(r["stale_merged"]) or "-",
-            r["origin"] or "-")) + ("  ERROR: " + r["error"] if r["error"] else ""))
+            r["origin"] or "-")) + ("  ERROR: " + _show(r["error"]) if r["error"] else ""))
     rows.append("")
     rows.append("Duplicate groups (same origin):")
     for k, paths in report["duplicates"].items():
-        rows.append("  %s: %s" % (k, ", ".join(paths)))
+        rows.append("  %s: %s" % (_show(k), ", ".join(_show(x) for x in paths)))
     rows.append("Leftover folders with no .git:")
     for p in report["leftovers"]:
-        rows.append("  " + p)
+        rows.append("  " + _show(p))
     return "\n".join(rows)
 
 

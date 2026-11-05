@@ -970,3 +970,43 @@ def test_eli1043_p3_a_symlinked_submodule_folder_is_not_followed_outside_its_rep
     reports = fleet_report.build_report([root], root)["repos"]
 
     assert [key(r["path"]) for r in reports] == [key(parent)]
+
+
+# Regression tests for the ELI-1043 interrogate round 7 findings at fbd06c3.
+
+@pytest.mark.skipif(os.name == "nt", reason="needs symlinks")
+def test_eli1043_q1_a_symlink_loop_at_a_gitlink_path_does_not_crash_the_report(tmp_path):
+    remote = bare_remote(tmp_path)
+    root = tmp_path / "root"
+    parent = root / "parent"
+    parent.mkdir(parents=True)
+    git(parent, "init", "-q")
+    commit(parent, "README")
+    git(parent, "-c", "protocol.file.allow=always", "submodule", "add", "-q", str(remote), "s1")
+    git(parent, "commit", "-q", "-m", "sub")
+    import shutil
+    shutil.rmtree(str(parent / "s1"))
+    os.symlink("s1", str(parent / "s1"))
+    other = clone(remote, root / "other")
+    commit(other, "local.txt")
+
+    reports = fleet_report.build_report([root], root)["repos"]
+
+    assert {key(r["path"]): r["no_remote"] for r in reports}.get(key(other)) == 1
+
+
+def test_eli1043_q2_control_characters_are_escaped_in_the_table():
+    report = {"repos": [
+        {"path": "/h/lib\x1b]0;", "branch": "b\x07", "dirty": 0, "no_remote": 0, "stashes": 0,
+         "worktrees": [], "default": None, "stale_merged": ["s\x9b2J"],
+         "origin": "https://h/o\x1b[2J", "error": "e\x1b]8;;"},
+        {"path": "/h/broken", "branch": "(detached)", "dirty": 0, "no_remote": 0, "stashes": 0,
+         "worktrees": [], "default": None, "stale_merged": [], "origin": "",
+         "error": "git status failed; check this repo by hand"},
+    ], "duplicates": {"h/o\x1b": ["/h/a\x1b", "/h/b"]}, "leftovers": ["/h/x-backup-\x1b]0;"]}
+
+    text = fleet_report._text(report)
+
+    assert not any(ord(c) < 0x20 and c != "\n" or 0x7f <= ord(c) <= 0x9f for c in text)
+    assert "/h/lib\\u001b]0;" in text
+    assert "/h/broken" in text and "ERROR: git status failed" in text
