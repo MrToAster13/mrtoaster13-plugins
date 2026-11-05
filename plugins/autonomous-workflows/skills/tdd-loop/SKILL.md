@@ -1,6 +1,6 @@
 ---
 name: tdd-loop
-description: Autonomous test-driven loop for a single feature: write failing tests, iterate implementation until green (max 10 attempts, each logged), run an adversarial review sub-agent that hunts logic bugs like over-aggressive filters, auto-fix and re-verify, run a security check, then commit only when everything passes. Use on "tdd loop", "build this feature test-first and don't stop until it's green", or when handed a feature spec to implement autonomously.
+description: "Autonomous test-driven loop for a single feature: write failing tests, iterate implementation until green (max 10 attempts, each logged), run an adversarial review sub-agent that hunts logic bugs like over-aggressive filters, auto-fix and re-verify, run a security check, then commit only when everything passes. Use on \"tdd loop\", \"build this feature test-first and don't stop until it's green\", or when handed a feature spec to implement autonomously."
 ---
 
 # Autonomous TDD Loop
@@ -14,7 +14,12 @@ If a `tdd` skill is installed, read it before writing any test; this skill is th
 - Do not mock what you own. Mock the network and the clock, not your own modules.
 - A test that never fails is not a test. Watch each one go red before it goes green.
 
-Stack commands come from the repo's own config: `package.json` scripts, `pyproject.toml`, `tox.ini`, `Makefile`, a CI workflow. Do not invent lint or test invocations.
+Test commands: use what the repo configures first (a `scripts` entry in `package.json`, a tool section in `pyproject.toml`, `tox.ini`, a `Makefile`, a pre-commit config, a CI workflow). Otherwise take the first that applies:
+
+- **Node.** The lockfile picks the package manager: `pnpm-lock.yaml` means `pnpm`, `yarn.lock` means `yarn`, anything else means `npm`. Run `<pm> test`. A placeholder script (`echo "Error: no test specified"`) means the repo has no tests. Say so, and do not call it a pass.
+- **Python.** Use the active, `.venv` or `venv` interpreter, else the one on `PATH`. Run `python -m pytest` if `python -m pytest --version` works. If pytest is not installed, run `tox` when there is a `tox.ini`. Otherwise, if the repo names pytest (in `pyproject.toml`, `setup.cfg`, a requirements file or a `conftest.py`) or a test file has a top-level `def test_` function, which unittest does not collect, stop and tell the user pytest is missing. Else run `python -m unittest discover -s tests` when there is a `tests` folder, `-s test` when there is a `test` folder, and `python -m unittest discover` when there is neither. If the one you ran collects no tests (pytest exits 5, unittest prints `Ran 0 tests`), the repo has no tests. Say so, and do not call it a pass.
+
+If none of these fits, ask. Do not invent lint or test invocations.
 
 ## Stage 0: Bind
 
@@ -91,4 +96,4 @@ Commit style: match `git log --oneline -20`. Present tense, one logical change, 
 
 Always show the iteration log in chat as a table: iteration, stage, change, pass/fail, tests still red. That is the headline the user asked for.
 
-Then write the full report to the OS temp dir as `tdd-loop-<feature>-<YYYY-MM-DD-HHMMSS>.html` (self-contained HTML, iteration log as a table, one card per adversarial finding), open it, and give the absolute path. Chat gets the verdict: green or not, what committed, what needs a decision.
+Then write the full report to the OS temp directory as `tdd-loop-<feature>-<YYYY-MM-DD-HHMMSS>.html` (self-contained HTML, iteration log as a table, one card per adversarial finding), open it, and give the absolute path. Chat gets the verdict: green or not, what committed, what needs a decision.

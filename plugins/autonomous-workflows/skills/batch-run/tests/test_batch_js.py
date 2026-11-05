@@ -1,11 +1,12 @@
-"""Tests for the model guard in workflows/batch.js.
+"""Tests that run workflows/batch.js under node: the model guard, the shell
+commands it puts in agent prompts, and the attempt count it carries across runs.
 
 batch.js is a workflow script with a top-level return, so it cannot be
 imported. These tests run the whole script under node in strict mode with stub
 `agent`, `pipeline` and `log`. estimate.py load-config owns the model and
 effort rules; batch.js runs the stages it is handed and, before a single agent
-starts, refuses any model but opus or haiku, any effort on haiku and any effort
-that is not plain lowercase letters. One test feeds the output of
+starts, refuses any model but opus or haiku, a verifier on anything but opus,
+any effort on haiku and any effort that is not plain lowercase letters. One test feeds the output of
 `estimate.py load-config --or-default` straight into a run, which is the
 contract the skill relies on. They skip when node is not on PATH.
 """
@@ -121,10 +122,12 @@ DEFAULTS = {"worker": {"model": "haiku"}, "verifier": {"model": "opus"}}
     {"worker": {"model": "haiku"}, "verifier": {"model": "opus", "effort": "HIGH"}},
     {"worker": {"model": "haiku"}, "verifier": {"model": "opus", "effort": " high"}},
     {"worker": {"model": "haiku", "effort": "high"}, "verifier": {"model": "opus"}},
+    {"worker": {"model": "haiku"}, "verifier": {"model": "haiku"}},
+    {"worker": {"model": "opus"}, "verifier": {"model": "haiku"}},
 ], ids=["missing", "null", "array", "string", "empty", "no-verifier", "bare-strings",
         "sonnet", "full-id", "capitalised", "padded", "null-model", "no-model",
         "number-effort", "list-effort", "empty-effort", "blank-effort", "upper-effort",
-        "padded-effort", "haiku-effort"])
+        "padded-effort", "haiku-effort", "haiku-both", "haiku-verifier"])
 def test_models_load_config_would_never_emit_are_refused_before_any_agent_runs(models):
     error = refused_run(models)
     assert "load-config --dir <checkpoint> --or-default" in error
@@ -135,6 +138,8 @@ def test_the_refusal_names_the_stage_and_the_value():
     assert 'models.verifier.model is "sonnet", not one of opus, haiku' in error
     error = refused_run({"worker": {"model": "haiku", "effort": "low"}, "verifier": DEFAULTS["verifier"]})
     assert 'models.worker.effort is "low", but haiku takes no effort override' in error
+    error = refused_run({"worker": {"model": "opus"}, "verifier": {"model": "haiku"}})
+    assert 'models.verifier.model is "haiku", but the verifier runs on opus only' in error
 
 
 def test_the_start_log_names_each_stage_as_it_runs():
@@ -161,9 +166,9 @@ def test_no_pending_units_needs_no_models():
     # estimate.py's rule, not batch.js's.
     ({"worker": {"model": "opus", "effort": "banana"}, "verifier": {"model": "opus"}},
      {"model": "opus", "effort": "banana"}, {"model": "opus", "effort": None}),
-    ({"choice": "custom", "remapped": ["x"], "worker": {"model": "opus", "extra": 1},
-      "verifier": {"model": "haiku"}},
-     {"model": "opus", "effort": None}, {"model": "haiku", "effort": None}),
+    ({"choice": "custom", "remapped": ["x"], "worker": {"model": "haiku", "extra": 1},
+      "verifier": {"model": "opus"}},
+     {"model": "haiku", "effort": None}, {"model": "opus", "effort": None}),
 ], ids=["effort-passed", "null-effort", "unknown-level", "extra-keys"])
 def test_allowed_models_pass_through_unchanged(models, worker, verifier):
     calls = run_whole_workflow(models)["calls"]
@@ -192,7 +197,10 @@ def _load_config_cli(cdir):
     # and batch.js runs what comes out.
     ({"choice": "sonnet-both", "worker": {"model": "Haiku 5.5", "effort": "high"},
       "verifier": {"model": "claude-sonnet-5-5"}}, "haiku", "opus"),
-], ids=["nothing-saved", "saved-choice", "old-sonnet"])
+    # A record from the removed haiku-both option resumes on an Opus verifier.
+    ({"choice": "haiku-both", "worker": {"model": "haiku"},
+      "verifier": {"model": "haiku"}}, "haiku", "opus"),
+], ids=["nothing-saved", "saved-choice", "old-sonnet", "old-haiku-both"])
 def test_load_config_output_runs_as_is(tmp_path, saved, worker, verifier):
     """The contract: whatever load-config --or-default prints, batch.js runs."""
     cdir = tmp_path / "checkpoint"
@@ -347,8 +355,9 @@ def test_the_blanker_names_an_unclosed_string_instead_of_crashing():
     (DEFAULTS, "haiku", "opus"),
     ({"worker": {"model": "opus", "effort": "high"}, "verifier": {"model": "opus"}},
      "opus", "opus"),
-    ({"worker": {"model": "opus"}, "verifier": {"model": "haiku"}}, "opus", "haiku"),
-], ids=["defaults", "opus-both", "swapped"])
+    ({"worker": {"model": "opus", "effort": "low"}, "verifier": {"model": "opus", "effort": "low"}},
+     "opus", "opus"),
+], ids=["defaults", "opus-both", "opus-low-effort"])
 @pytest.mark.parametrize("max_attempts", [2, estimate.MAX_ATTEMPTS],
                          ids=["default-attempts", "max-attempts"])
 def test_every_agent_call_in_a_whole_run_names_an_allowed_model(
@@ -472,8 +481,7 @@ def test_the_authority_command_passes_hostile_paths_through_sh_unchanged():
     assert words == [HOSTILE_STATE, "report", "--units", "units.json", "--dir", HOSTILE_DIR]
 
 
-# ELI-917: the attempt count carried across runs, as in claude-config PR #53.
-# The same runner as PROMPT_RUNNER, except every verdict rejects the artifact.
+# The same runner, except every verdict rejects the artifact.
 REJECTING_RUNNER = PROMPT_RUNNER.replace(
     "{ ok: true, reason: 'holds up' }", "{ ok: false, reason: 'still wrong' }")
 
@@ -498,7 +506,7 @@ def test_a_fresh_unit_gets_max_attempts_writer_and_verifier_pairs():
 
 
 def test_batch_js_continues_from_the_stored_failure_count():
-    # A unit rejected once in an earlier run gets one more pair, not two.
+    # ELI-893: a unit rejected once in an earlier run gets one more pair, not two.
     run = rejected_run([{"id": "a"}, {"id": "b"}], maxAttempts=2,
                        priorFailures={"a": {"failures": 1, "reason": "missing date"}})
     a_prompts = [p for p in run["prompts"] if "--id 'a'" in p]
@@ -525,27 +533,8 @@ def test_batch_js_reads_a_bogus_prior_count_as_zero(bogus):
     assert len(run["prompts"]) == 4
 
 
-def test_the_failures_cli_output_feeds_batch_js_as_prior_failures(tmp_path):
-    """The contract step 2 and step 5 of SKILL.md rely on: what
-    `state.py failures` prints, batch.js takes as priorFailures."""
-    import state
-    cdir = tmp_path / "checkpoint"
-    units_file = tmp_path / "units.json"
-    units_file.write_text(json.dumps([{"id": "a"}]), encoding="utf-8")
-    state.record(cdir, "a", "written", artifact="out.md")
-    state.record(cdir, "a", "failed", reason="missing date")
-    out = subprocess.run([sys.executable, str(Path(state.__file__)), "failures",
-                          "--units", str(units_file), "--dir", str(cdir)],
-                         stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=60)
-    assert out.returncode == 0, out.stderr.decode()
-    run = rejected_run([{"id": "a"}], maxAttempts=2,
-                       priorFailures=json.loads(out.stdout.decode()))
-    assert len(run["prompts"]) == 2
-    assert "missing date" in run["prompts"][0]
-
-
 def test_a_zero_max_attempts_reports_no_attempt_not_a_cap():
-    # Review finding B3. No rejection happened, so the reason must not claim one.
+    # ELI-917. No rejection happened, so the reason must not claim one.
     run = rejected_run([{"id": "a"}], maxAttempts=0)
     assert run["prompts"] == []
     assert run["result"]["failed"] == [{"id": "a", "reason": "no attempt completed"}]

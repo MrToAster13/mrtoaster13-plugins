@@ -408,10 +408,13 @@ def test_a_lock_windows_reports_in_use_for_a_moment_is_retried(batch, monkeypatc
     os.utime(str(path), (old, old))
     real_open, calls = os.open, []
 
+    # Only opens of the lock itself count. Stealing a stale lock also opens a
+    # guard file next to it, which is not what this test is about.
     def busy(target, flags, *rest):
-        calls.append(target)
-        if len(calls) == busy_on:
-            raise PermissionError(13, "in use", target)
+        if str(target) == str(path):
+            calls.append(target)
+            if len(calls) == busy_on:
+                raise PermissionError(13, "in use", target)
         return real_open(target, flags, *rest)
 
     monkeypatch.setattr(state.os, "open", busy)
@@ -495,6 +498,19 @@ def test_units_without_an_id_are_rejected_at_load(tmp_path):
     path.write_text(json.dumps([{"jd": "x"}]), encoding="utf-8")
     with pytest.raises(ValueError, match="'id'"):
         state.load_units(str(path))
+
+
+@pytest.mark.parametrize(
+    "unit_id",
+    [["a"], {"a": 1}, 7, None, True, "", "  "],
+    ids=["list", "dict", "int", "null", "bool", "empty", "blank"],
+)
+def test_a_unit_id_that_is_not_a_non_empty_string_is_rejected_at_load(tmp_path, unit_id):
+    path = tmp_path / "units.json"
+    path.write_text(json.dumps([{"id": unit_id}]), encoding="utf-8")
+    with pytest.raises(ValueError, match="unit id must be a non-empty string"):
+        state.load_units(str(path))
+
 
 
 # --- the CLI the agents actually call -------------------------------------
@@ -692,150 +708,287 @@ def test_a_config_with_a_byte_order_mark_reads(tmp_path):
     assert state.read_config(cdir) == {"choice": "x"}
 
 
-# --- ELI-917: the failures count, as in claude-config PR #53 -----------------
-
-def _reject(cdir, unit_id, times):
-    for i in range(times):
-        state.record(cdir, unit_id, "written", artifact="out.md")
-        state.record(cdir, unit_id, "failed", reason="rejection {}".format(i + 1))
-
-
-def test_a_record_written_over_a_failed_one_keeps_the_failures_count(batch):
-    # ELI-917 criterion 1. claude-config's copy wrote this failed record. A
-    # retry under this copy records written over it; the count must survive.
-    units, _, cdir = batch
-    path = state.record_path(cdir, "unit-01")
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps({"unit_id": "unit-01", "status": "failed", "attempt": 2,
-                                "failures": 1, "reason": "missing date",
-                                "last_rejection": "missing date"}), encoding="utf-8")
-    state.record(cdir, "unit-01", "written", artifact="out.md")
-    rec = state.read_record(cdir, "unit-01")
-    assert rec["status"] == "written"
-    assert rec["failures"] == 1
-    assert rec["last_rejection"] == "missing date"
-    state.record(cdir, "unit-01", "failed", reason="still no date")
-    assert state.read_record(cdir, "unit-01")["failures"] == 2
-    assert "unit-01" not in [u["id"] for u in state.todo(cdir, units, max_attempts=2)]
+def test_ids_that_differ_only_in_case_load_and_get_different_files(tmp_path):
+    # An id with an uppercase letter gets a hash tag, so case twins load and
+    # never share a file, even on a case-insensitive file system.
+    path = tmp_path / "units.json"
+    path.write_text(json.dumps([{"id": "Acme"}, {"id": "acme"}]), encoding="utf-8")
+    assert [u["id"] for u in state.load_units(str(path))] == ["Acme", "acme"]
+    assert state.record_path(tmp_path, "Acme").name.lower() != state.record_path(tmp_path, "acme").name.lower()
+    state.record(tmp_path, "Acme", "verified")
+    assert state.read_record(tmp_path, "acme") is None
 
 
-def test_each_rejection_counts_once(batch):
+def test_an_id_equal_to_another_ids_slug_is_rejected_at_load(tmp_path):
+    path = tmp_path / "units.json"
+    path.write_text(json.dumps([{"id": "a/b"}, {"id": state.slug_for("a/b")}]), encoding="utf-8")
+    with pytest.raises(ValueError, match="would share the checkpoint file"):
+        state.load_units(str(path))
+
+
+def test_a_record_written_for_another_id_reads_as_pending(tmp_path):
+    cdir = tmp_path / "checkpoint"
+    state.record(cdir, "a", "verified")
+    os.replace(str(state.record_path(cdir, "a")), str(state.record_path(cdir, "b")))
+    assert state.read_record(cdir, "b") is None
+
+
+@pytest.mark.parametrize("number", ["NaN", "Infinity", "-Infinity", "1e999", "-1e999"])
+def test_a_units_file_with_a_non_finite_number_is_rejected_at_load(tmp_path, number):
+    path = tmp_path / "units.json"
+    path.write_text('[{"id": "a", "n": %s}]' % number, encoding="utf-8")
+    with pytest.raises(ValueError, match="not JSON|out of range"):
+        state.load_units(str(path))
+
+
+# --- two callers that judge the same lock stale --------------------------
+
+def test_a_caller_with_an_old_stale_judgment_does_not_take_a_lock_stolen_meanwhile(batch, monkeypatch):
+    # B judges the lock stale, then A steals it and writes a
+    # fresh lock before B acts. B must not delete A's lock and win too.
     _, _, cdir = batch
-    _reject(cdir, "unit-05", 1)
-    assert state.read_record(cdir, "unit-05")["failures"] == 1
-    state.record(cdir, "unit-05", "written", artifact="out.md")
-    assert state.read_record(cdir, "unit-05")["failures"] == 1
-    state.record(cdir, "unit-05", "verified", reason="holds up")
-    assert state.read_record(cdir, "unit-05")["failures"] == 1
+    assert state.claim(cdir, "unit-14", owner="dead") is True
+    path = state.lock_path(cdir, "unit-14")
+    old = time.time() - 3600
+    os.utime(str(path), (old, old))
+
+    real_getmtime = os.path.getmtime
+    results = {}
+
+    def a_steals_while_b_judges(target):
+        seen = real_getmtime(target)
+        if "a" not in results:
+            monkeypatch.setattr(state.os.path, "getmtime", real_getmtime)
+            results["a"] = state.claim(cdir, "unit-14", lease_seconds=60, owner="a")
+        return seen
+
+    monkeypatch.setattr(state.os.path, "getmtime", a_steals_while_b_judges)
+    results["b"] = state.claim(cdir, "unit-14", lease_seconds=60, owner="b")
+
+    assert results == {"a": True, "b": False}
+    assert json.loads(path.read_text(encoding="utf-8"))["owner"] == "a"
 
 
-def test_a_fresh_record_starts_the_count_at_zero(batch):
+@pytest.mark.parametrize("lease", [60, 0], ids=["lease-60", "lease-0"])
+def test_a_fresh_steal_guard_makes_the_caller_lose(batch, lease):
+    # Another caller is stealing right now.
     _, _, cdir = batch
-    assert state.record(cdir, "unit-02", "written", artifact="out.md")["failures"] == 0
+    assert state.claim(cdir, "unit-15") is True
+    path = state.lock_path(cdir, "unit-15")
+    old = time.time() - 3600
+    os.utime(str(path), (old, old))
+    guard = path.with_name(path.name + ".steal")
+    guard.write_text("", encoding="utf-8")
+
+    assert state.claim(cdir, "unit-15", lease_seconds=lease) is False
+    assert path.exists()
+    assert guard.exists()
 
 
-def test_todo_leaves_out_a_unit_rejected_cap_many_times(batch):
-    units, _, cdir = batch
-    _reject(cdir, "unit-03", 2)
-    ids = [u["id"] for u in state.todo(cdir, units, max_attempts=2)]
-    assert "unit-03" not in ids
-    assert len(ids) == 29
-    assert [u["id"] for u in state.capped(cdir, units, max_attempts=2)] == ["unit-03"]
+@pytest.mark.parametrize("offset", [-3600, 3600], ids=["old", "far-future"])
+def test_a_steal_guard_left_by_a_dead_caller_is_cleared(batch, offset):
+    # A stealer that died leaves its guard. One 60 seconds or
+    # more off the clock is removed; that call still loses, the next one wins.
+    _, _, cdir = batch
+    assert state.claim(cdir, "unit-16") is True
+    path = state.lock_path(cdir, "unit-16")
+    old = time.time() - 3600
+    os.utime(str(path), (old, old))
+    guard = path.with_name(path.name + ".steal")
+    guard.write_text("", encoding="utf-8")
+    when = time.time() + offset
+    os.utime(str(guard), (when, when))
+
+    assert state.claim(cdir, "unit-16", lease_seconds=60) is False
+    assert not guard.exists()
+    assert state.claim(cdir, "unit-16", lease_seconds=60) is True
+    assert not guard.exists()
 
 
-def test_the_default_cap_matches_batch_js_max_attempts(batch):
-    units, _, cdir = batch
-    assert state.DEFAULT_MAX_ATTEMPTS == 2
-    _reject(cdir, "unit-03", 2)
-    assert "unit-03" not in [u["id"] for u in state.todo(cdir, units)]
+def test_clearing_a_dead_guard_does_not_delete_a_live_one_made_meanwhile(batch, monkeypatch):
+    # X judges the guard old, then before X removes
+    # it, another caller clears it and W makes a fresh one. X must leave W's.
+    _, _, cdir = batch
+    assert state.claim(cdir, "unit-17") is True
+    path = state.lock_path(cdir, "unit-17")
+    old = time.time() - 3600
+    os.utime(str(path), (old, old))
+    guard = path.with_name(path.name + ".steal")
+    guard.write_text("dead", encoding="utf-8")
+    os.utime(str(guard), (old, old))
+
+    real_getmtime = os.path.getmtime
+
+    def swap_guard(target):
+        seen = real_getmtime(target)
+        if str(target) == str(guard):
+            monkeypatch.setattr(state.os.path, "getmtime", real_getmtime)
+            os.unlink(str(guard))
+            guard.write_text("live", encoding="utf-8")
+        return seen
+
+    monkeypatch.setattr(state.os.path, "getmtime", swap_guard)
+    assert state.claim(cdir, "unit-17", lease_seconds=60) is False
+    assert guard.read_text(encoding="utf-8") == "live"
 
 
-def test_a_unit_below_the_cap_stays_in_todo(batch):
-    units, _, cdir = batch
-    _reject(cdir, "unit-03", 1)
-    assert "unit-03" in [u["id"] for u in state.todo(cdir, units, max_attempts=2)]
-    assert state.capped(cdir, units, max_attempts=2) == []
+def test_a_stealer_does_not_delete_a_guard_that_replaced_its_own(batch, monkeypatch):
+    # The stealer's own guard is cleared and another
+    # caller makes a fresh one while the stealer works. The stealer must not
+    # remove the fresh guard when it finishes.
+    _, _, cdir = batch
+    assert state.claim(cdir, "unit-18") is True
+    path = state.lock_path(cdir, "unit-18")
+    old = time.time() - 3600
+    os.utime(str(path), (old, old))
+    guard = path.with_name(path.name + ".steal")
+
+    real_stat = os.stat
+    swapped = []
+
+    def swap_during_steal(target, *args, **kwargs):
+        if str(target) == str(path) and guard.exists() and not swapped:
+            swapped.append(True)
+            os.unlink(str(guard))
+            guard.write_text("other", encoding="utf-8")
+        return real_stat(target, *args, **kwargs)
+
+    monkeypatch.setattr(state.os, "stat", swap_during_steal)
+    state.claim(cdir, "unit-18", lease_seconds=60)
+    assert swapped
+    assert guard.exists() and guard.read_text(encoding="utf-8") == "other"
 
 
-def test_a_written_record_without_a_rejection_does_not_count_toward_the_cap(batch):
-    units, _, cdir = batch
-    for _ in range(3):
-        state.record(cdir, "unit-04", "written", artifact="out.md")
-    assert "unit-04" in [u["id"] for u in state.todo(cdir, units, max_attempts=2)]
-
-
-def test_a_unit_verified_after_rejections_is_done_not_capped(batch):
-    units, _, cdir = batch
-    _reject(cdir, "unit-06", 2)
-    state.record(cdir, "unit-06", "verified", reason="holds up")
-    assert "unit-06" not in [u["id"] for u in state.todo(cdir, units, max_attempts=2)]
-    assert state.capped(cdir, units, max_attempts=2) == []
-
-
-def test_raising_the_cap_lets_a_capped_unit_run_again(batch):
-    units, _, cdir = batch
-    _reject(cdir, "unit-07", 2)
-    assert "unit-07" in [u["id"] for u in state.todo(cdir, units, max_attempts=3)]
-
-
-@pytest.mark.parametrize("bogus", ["2", None, -1, True, 1.5])
-def test_a_hand_edited_failure_count_that_is_not_a_count_reads_as_zero(batch, bogus):
-    units, _, cdir = batch
-    path = state.record_path(cdir, "unit-08")
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps({"unit_id": "unit-08", "status": "failed", "failures": bogus}),
+def test_an_id_equal_to_another_ids_tag_in_another_case_is_rejected_at_load(tmp_path):
+    # Unit-01 lands on Unit-01.2f666dfc.json. unit-01.2f666dfc keeps its own
+    # name, which a case-insensitive file system reads as the same file.
+    path = tmp_path / "units.json"
+    path.write_text(json.dumps([{"id": "Unit-01"}, {"id": state.slug_for("Unit-01").lower()}]),
                     encoding="utf-8")
-    assert "unit-08" in [u["id"] for u in state.todo(cdir, units, max_attempts=1)]
-    assert state.record(cdir, "unit-08", "failed", reason="x")["failures"] == 1
+    with pytest.raises(ValueError, match="would share the checkpoint file"):
+        state.load_units(str(path))
 
 
-def test_a_cap_below_one_is_rejected(batch):
-    units, _, cdir = batch
-    with pytest.raises(ValueError, match="at least 1"):
-        state.todo(cdir, units, max_attempts=0)
+@pytest.mark.parametrize("number", ["NaN", "Infinity", "-1e999"])
+def test_a_record_with_a_non_finite_number_reads_as_pending(tmp_path, number):
+    cdir = tmp_path / "checkpoint"
+    cdir.mkdir()
+    state.record_path(cdir, "u1").write_text(
+        '{"unit_id": "u1", "status": "verified", "attempt": %s}' % number, encoding="utf-8")
+    assert state.read_record(cdir, "u1") is None
 
 
-def test_the_todo_cli_skips_and_reports_capped_units(batch):
-    _, units_file, cdir = batch
-    _reject(cdir, "unit-09", 2)
-    result = run_cli("todo", "--units", str(units_file), "--dir", str(cdir), "--max-attempts", "2")
-    assert result.returncode == 0
-    ids = [u["id"] for u in json.loads(result.stdout.decode())]
-    assert "unit-09" not in ids and len(ids) == 29
-    assert b"unit-09" in result.stderr
-    result = run_cli("todo", "--units", str(units_file), "--dir", str(cdir), "--max-attempts", "3")
-    assert "unit-09" in [u["id"] for u in json.loads(result.stdout.decode())]
+def test_a_steal_guard_busy_for_a_moment_is_retried(batch, monkeypatch):
+    # Windows can report the guard file in use while antivirus scans it.
+    _, _, cdir = batch
+    assert state.claim(cdir, "unit-19") is True
+    path = state.lock_path(cdir, "unit-19")
+    old = time.time() - 3600
+    os.utime(str(path), (old, old))
+    guard = str(path.with_name(path.name + ".steal"))
+    real_open, busy = os.open, []
+
+    def busy_guard_once(target, flags, *rest):
+        if str(target) == guard and not busy:
+            busy.append(target)
+            raise PermissionError(13, "in use", target)
+        return real_open(target, flags, *rest)
+
+    monkeypatch.setattr(state.os, "open", busy_guard_once)
+    assert state.claim(cdir, "unit-19", lease_seconds=60) is True
+    assert busy
 
 
-def test_the_todo_cli_rejects_a_cap_below_one(batch):
-    _, units_file, cdir = batch
-    result = run_cli("todo", "--units", str(units_file), "--dir", str(cdir), "--max-attempts", "0")
-    assert result.returncode == 2
+# --- a units file strict JSON rejects is a clean CLI error ------------------
+
+BAD_UNITS = ['[{"id": "a", "n": NaN}]', '[{"id": "a", "n": Infinity}]', '[{"id": "a", "n": 1e999}]']
 
 
-def test_the_failures_cli_prints_counts_and_last_reason_for_unfinished_units(batch):
-    _, units_file, cdir = batch
-    _reject(cdir, "unit-10", 1)
-    _reject(cdir, "unit-11", 2)
-    state.record(cdir, "unit-11", "verified")
-    result = run_cli("failures", "--units", str(units_file), "--dir", str(cdir))
-    assert result.returncode == 0
-    assert json.loads(result.stdout.decode()) == {
-        "unit-10": {"failures": 1, "reason": "rejection 1"}}
+@pytest.mark.parametrize("command", ["todo", "report"])
+@pytest.mark.parametrize("text", BAD_UNITS + [None])
+def test_the_todo_and_report_cli_exit_1_on_a_units_file_strict_json_rejects(
+        tmp_path, capsys, command, text):
+    units_file = tmp_path / "units.json"
+    if text is not None:
+        units_file.write_text(text, encoding="utf-8")
+    rc = state._main([command, "--dir", str(tmp_path / "checkpoint"), "--units", str(units_file)])
+    out = capsys.readouterr()
+    assert rc == 1
+    assert out.err.startswith("error: ")
+    assert "Traceback" not in out.err
+    assert out.out == ""
 
 
-def test_the_last_rejection_reason_survives_a_later_written_record(batch):
-    units, _, cdir = batch
-    _reject(cdir, "unit-12", 1)
-    state.record(cdir, "unit-12", "written", artifact="out.md")
-    assert state.failure_counts(cdir, units) == {
-        "unit-12": {"failures": 1, "reason": "rejection 1"}}
+@pytest.mark.parametrize("text", BAD_UNITS + [None])
+def test_the_handoff_cli_exits_1_on_a_units_file_strict_json_rejects(tmp_path, capsys, text):
+    sys.path.insert(0, str(SCRIPTS))
+    import handoff
+
+    units_file = tmp_path / "units.json"
+    if text is not None:
+        units_file.write_text(text, encoding="utf-8")
+    root = tmp_path / "repo"
+    rc = handoff._main(["--units", str(units_file), "--dir", str(tmp_path / "checkpoint"),
+                        "--slug", "bad", "--root", str(root)])
+    out = capsys.readouterr()
+    assert rc == 1
+    assert out.err.startswith("error: ")
+    assert "Traceback" not in out.err
+    assert not (root / "docs" / "handoffs").exists() or not list(
+        (root / "docs" / "handoffs").iterdir())
 
 
-# --- ELI-917: release checks the owner, as in claude-config PR #53 ----------
+# --- release retries a lock Windows reports in use --------------------------
+
+def test_release_retries_while_windows_reports_the_lock_in_use(batch, monkeypatch):
+    _, _, cdir = batch
+    assert state.claim(cdir, "unit-20") is True
+    path = state.lock_path(cdir, "unit-20")
+    real_unlink, busy = os.unlink, []
+
+    def busy_once(target, *rest, **kw):
+        if str(target) == str(path) and not busy:
+            busy.append(target)
+            raise PermissionError(13, "in use", target)
+        return real_unlink(target, *rest, **kw)
+
+    monkeypatch.setattr(state.os, "unlink", busy_once)
+    assert state.release(cdir, "unit-20") is True
+    assert busy
+    assert not path.exists()
+
+
+# --- nesting depth checked after the parser ---------------------------------
+
+def _nested_list(depth):
+    value = []
+    for _ in range(depth):
+        value = [value]
+    return value
+
+
+def test_a_units_file_nested_too_deeply_is_a_value_error_when_json_parses_it(tmp_path, monkeypatch):
+    # ELI-668: on CI's Python 3.14.9, json.load parsed 100000 nested brackets
+    # without RecursionError, so load_units reported a missing id instead.
+    # Patching json.load reproduces that parser on any Python.
+    path = tmp_path / "units.json"
+    path.write_text("[]", encoding="utf-8")
+    deep = _nested_list(5000)
+    monkeypatch.setattr(state.json, "load", lambda *a, **k: deep)
+    with pytest.raises(ValueError, match="units file is nested too deeply to parse"):
+        state.load_units(str(path))
+
+
+def test_units_with_moderately_nested_fields_still_load(tmp_path):
+    path = tmp_path / "units.json"
+    path.write_text(json.dumps([{"id": "a", "payload": _nested_list(50)}]), encoding="utf-8")
+    assert [u["id"] for u in state.load_units(str(path))] == ["a"]
+
+
+# --- ELI-893: release checks the owner ------------------------------------
 
 def test_a_holders_late_release_leaves_the_thiefs_lock(batch):
-    # ELI-917 criterion 2. A's lease went stale and B stole it. A finishes
+    # ELI-893 criterion 1. A's lease went stale and B stole it. A finishes
     # late and releases; B's lock must survive, so a third run cannot claim.
     _, _, cdir = batch
     assert state.claim(cdir, "unit-20", owner="run-a") is True
@@ -852,7 +1005,18 @@ def test_a_holders_late_release_leaves_the_thiefs_lock(batch):
     assert not path.exists()
 
 
+def test_release_by_the_owner_leaves_no_steal_guard(batch):
+    _, _, cdir = batch
+    assert state.claim(cdir, "unit-21", owner="run-a") is True
+    path = state.lock_path(cdir, "unit-21")
+    assert state.release(cdir, "unit-21", "run-a") is True
+    assert not path.exists()
+    assert not path.with_name(path.name + ".steal").exists()
+
+
 def test_release_leaves_a_lock_whose_body_is_not_yet_written(batch):
+    # A winner creates the lock and writes its owner a moment later. A release
+    # in between cannot tell whose it is, so it leaves it.
     _, _, cdir = batch
     path = state.lock_path(cdir, "unit-22")
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -864,7 +1028,6 @@ def test_release_leaves_a_lock_whose_body_is_not_yet_written(batch):
 def test_release_does_not_remove_a_lock_swapped_in_after_the_owner_check(batch, monkeypatch):
     # The lock is read and matches, then another caller replaces it before the
     # removal. Release must notice the file changed and leave the new one.
-    import io
     _, _, cdir = batch
     assert state.claim(cdir, "unit-23", owner="run-a") is True
     path = state.lock_path(cdir, "unit-23")
@@ -880,6 +1043,7 @@ def test_release_does_not_remove_a_lock_swapped_in_after_the_owner_check(batch, 
             os.replace(str(path), str(path) + ".old")
             path.write_text(json.dumps({"owner": "run-b", "at": time.time(), "pad": "x" * 40}),
                             encoding="utf-8")
+            import io
             return io.StringIO(body)
         return fh
 
@@ -903,7 +1067,165 @@ def test_the_release_cli_with_the_wrong_owner_exits_4_and_keeps_the_lock(batch):
     assert not state.lock_path(cdir, "unit-24").exists()
 
 
+# --- ELI-893: a cap on attempts across resumes ----------------------------
+
+def _reject(cdir, unit_id, times):
+    for i in range(times):
+        state.record(cdir, unit_id, "written", artifact="out.md")
+        state.record(cdir, unit_id, "failed", reason="rejection {}".format(i + 1))
+
+
+def test_todo_leaves_out_a_unit_rejected_cap_many_times(batch):
+    # ELI-893 criterion 2.
+    units, _, cdir = batch
+    _reject(cdir, "unit-03", 2)
+    ids = [u["id"] for u in state.todo(cdir, units, max_attempts=2)]
+    assert "unit-03" not in ids
+    assert len(ids) == 29
+    assert [u["id"] for u in state.capped(cdir, units, max_attempts=2)] == ["unit-03"]
+
+
+def test_the_default_cap_matches_batch_js_max_attempts(batch):
+    units, _, cdir = batch
+    assert state.DEFAULT_MAX_ATTEMPTS == 2
+    _reject(cdir, "unit-03", 2)
+    assert "unit-03" not in [u["id"] for u in state.todo(cdir, units)]
+
+
+def test_a_unit_below_the_cap_stays_in_todo(batch):
+    units, _, cdir = batch
+    _reject(cdir, "unit-03", 1)
+    assert "unit-03" in [u["id"] for u in state.todo(cdir, units, max_attempts=2)]
+    assert state.capped(cdir, units, max_attempts=2) == []
+
+
+def test_a_written_record_without_a_rejection_does_not_count_toward_the_cap(batch):
+    # The writer records written; the session dies before the verifier runs.
+    # That is not a rejection, however many times it happens.
+    units, _, cdir = batch
+    for _ in range(3):
+        state.record(cdir, "unit-04", "written", artifact="out.md")
+    assert "unit-04" in [u["id"] for u in state.todo(cdir, units, max_attempts=2)]
+
+
+def test_each_rejection_counts_once(batch):
+    _, _, cdir = batch
+    _reject(cdir, "unit-05", 1)
+    assert state.read_record(cdir, "unit-05")["failures"] == 1
+    state.record(cdir, "unit-05", "written", artifact="out.md")
+    assert state.read_record(cdir, "unit-05")["failures"] == 1
+
+
+def test_a_unit_verified_after_rejections_is_done_not_capped(batch):
+    units, _, cdir = batch
+    _reject(cdir, "unit-06", 2)
+    state.record(cdir, "unit-06", "verified", reason="holds up")
+    assert "unit-06" not in [u["id"] for u in state.todo(cdir, units, max_attempts=2)]
+    assert state.capped(cdir, units, max_attempts=2) == []
+    assert state.report(cdir, units)["ids"]["verified"] == ["unit-06"]
+
+
+def test_raising_the_cap_lets_a_capped_unit_run_again(batch):
+    units, _, cdir = batch
+    _reject(cdir, "unit-07", 2)
+    assert "unit-07" in [u["id"] for u in state.todo(cdir, units, max_attempts=3)]
+
+
+@pytest.mark.parametrize("bogus", ["2", None, -1, True, 1.5])
+def test_a_hand_edited_failure_count_that_is_not_a_count_reads_as_zero(batch, bogus):
+    units, _, cdir = batch
+    path = state.record_path(cdir, "unit-08")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"unit_id": "unit-08", "status": "failed", "failures": bogus}),
+                    encoding="utf-8")
+    assert "unit-08" in [u["id"] for u in state.todo(cdir, units, max_attempts=1)]
+
+
+def test_a_cap_below_one_is_rejected(batch):
+    units, _, cdir = batch
+    with pytest.raises(ValueError, match="at least 1"):
+        state.todo(cdir, units, max_attempts=0)
+
+
+def test_the_todo_cli_skips_and_reports_capped_units(batch):
+    units, units_file, cdir = batch
+    _reject(cdir, "unit-09", 2)
+    result = run_cli("todo", "--units", str(units_file), "--dir", str(cdir), "--max-attempts", "2")
+    assert result.returncode == 0
+    ids = [u["id"] for u in json.loads(result.stdout.decode())]
+    assert "unit-09" not in ids and len(ids) == 29
+    assert b"unit-09" in result.stderr
+    result = run_cli("todo", "--units", str(units_file), "--dir", str(cdir), "--max-attempts", "3")
+    assert "unit-09" in [u["id"] for u in json.loads(result.stdout.decode())]
+
+
+def test_the_todo_cli_rejects_a_cap_below_one(batch):
+    _, units_file, cdir = batch
+    result = run_cli("todo", "--units", str(units_file), "--dir", str(cdir), "--max-attempts", "0")
+    assert result.returncode == 2
+
+
+def test_the_failures_cli_prints_counts_and_last_reason_for_unfinished_units(batch):
+    units, units_file, cdir = batch
+    _reject(cdir, "unit-10", 1)
+    _reject(cdir, "unit-11", 2)
+    state.record(cdir, "unit-11", "verified")
+    result = run_cli("failures", "--units", str(units_file), "--dir", str(cdir))
+    assert result.returncode == 0
+    assert json.loads(result.stdout.decode()) == {
+        "unit-10": {"failures": 1, "reason": "rejection 1"}}
+
+
+# --- ELI-893 review findings ----------------------------------------------
+
+def test_the_last_rejection_reason_survives_a_later_written_record(batch):
+    # Review finding 1. Rejected once, then the retry's writer records written
+    # and the session dies before the verifier. The resume must still hand
+    # the writer the rejection reason.
+    units, _, cdir = batch
+    _reject(cdir, "unit-12", 1)
+    state.record(cdir, "unit-12", "written", artifact="out.md")
+    assert state.failure_counts(cdir, units) == {
+        "unit-12": {"failures": 1, "reason": "rejection 1"}}
+
+
+def test_release_with_an_owner_clears_a_dead_stealers_guard_and_still_releases(batch):
+    # Review finding 2. A stealer died holding the guard. The holder's one
+    # release call must not fail on that guard.
+    _, _, cdir = batch
+    assert state.claim(cdir, "unit-25", owner="run-a") is True
+    path = state.lock_path(cdir, "unit-25")
+    guard = path.with_name(path.name + ".steal")
+    guard.write_text("dead", encoding="utf-8")
+    old = time.time() - 3600
+    os.utime(str(guard), (old, old))
+    assert state.release(cdir, "unit-25", "run-a") is True
+    assert not path.exists()
+    assert not guard.exists()
+
+
+def test_release_with_an_owner_waits_out_a_live_guard_briefly(batch, monkeypatch):
+    # Review finding 2. A live guard that goes away a moment later does not
+    # make the holder's release fail.
+    _, _, cdir = batch
+    assert state.claim(cdir, "unit-26", owner="run-a") is True
+    path = state.lock_path(cdir, "unit-26")
+    guard = path.with_name(path.name + ".steal")
+    guard.write_text("live", encoding="utf-8")
+    real_sleep = time.sleep
+
+    def guard_goes_away(seconds):
+        if guard.exists():
+            os.unlink(str(guard))
+        real_sleep(0)
+
+    monkeypatch.setattr(state.time, "sleep", guard_goes_away)
+    assert state.release(cdir, "unit-26", "run-a") is True
+    assert not path.exists()
+
+
 def test_release_matches_a_long_owner(batch):
+    # Review finding 3.
     _, _, cdir = batch
     owner = "o" * 5000 + "\U0001f600" * 500
     assert state.claim(cdir, "unit-27", owner=owner) is True
@@ -912,17 +1234,19 @@ def test_release_matches_a_long_owner(batch):
 
 @pytest.mark.parametrize("owner", ["", 123])
 def test_release_matches_an_owner_claim_took_as_given(batch, owner):
+    # Review finding 4. claim used to swap an empty owner for its pid, which
+    # no later release could name.
     _, _, cdir = batch
     assert state.claim(cdir, "unit-28", owner=owner) is True
     assert state.release(cdir, "unit-28", owner) is True
     assert not state.lock_path(cdir, "unit-28").exists()
 
 
-# --- ELI-917 review findings -------------------------------------------------
+# --- ELI-917, ported from the plugins copy ----------------------------------
 
 def test_a_record_whose_prior_cannot_be_read_raises_instead_of_resetting_the_count(batch, monkeypatch):
-    # Review finding A1. A sharing violation that outlasts the read's retries
-    # must not pass for a missing record; a later write would reset failures.
+    # A sharing violation that outlasts the read's retries must not pass for
+    # a missing record; writing over it would reset failures to 0.
     _, _, cdir = batch
     _reject(cdir, "unit-13", 1)
     path = state.record_path(cdir, "unit-13")
@@ -950,27 +1274,30 @@ def test_a_record_over_a_malformed_file_still_starts_fresh(batch):
     assert state.record(cdir, "unit-14", "written", artifact="out.md")["failures"] == 0
 
 
-def test_release_retries_a_delete_windows_reports_in_use(batch, monkeypatch):
-    # Review finding A2.
+def test_release_with_an_owner_retries_a_delete_windows_reports_in_use(batch, monkeypatch):
     _, _, cdir = batch
     assert state.claim(cdir, "unit-29", owner="run-a") is True
+    path = state.lock_path(cdir, "unit-29")
     real_unlink, calls = os.unlink, []
 
-    def busy_once(target):
-        calls.append(target)
-        if len(calls) == 1:
-            raise PermissionError(13, "in use", target)
-        return real_unlink(target)
+    # Only deletes of the lock count. The release also deletes its steal
+    # guard, which is not what this test is about.
+    def busy_once(target, *rest, **kw):
+        if str(target) == str(path):
+            calls.append(target)
+            if len(calls) == 1:
+                raise PermissionError(13, "in use", target)
+        return real_unlink(target, *rest, **kw)
 
     monkeypatch.setattr(state.os, "unlink", busy_once)
     assert state.release(cdir, "unit-29", "run-a") is True
     assert len(calls) == 2
-    assert not state.lock_path(cdir, "unit-29").exists()
+    assert not path.exists()
 
 
 def test_a_reasonless_rejection_does_not_report_an_older_reason(batch):
-    # Review finding B1. The last rejection carried no reason, so failures
-    # reports None both before and after the retry's written record.
+    # The last rejection carried no reason, so failures reports None both
+    # before and after the retry's written record.
     units, _, cdir = batch
     _reject(cdir, "unit-15", 1)
     state.record(cdir, "unit-15", "written", artifact="out.md")
@@ -981,10 +1308,41 @@ def test_a_reasonless_rejection_does_not_report_an_older_reason(batch):
 
 
 def test_release_reads_a_lock_saved_with_a_byte_order_mark(batch):
-    # Review finding B2.
     _, _, cdir = batch
     path = state.lock_path(cdir, "unit-30")
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(b"\xef\xbb\xbf" + json.dumps({"owner": "run-a", "at": 1}).encode())
     assert state.release(cdir, "unit-30", "run-a") is True
     assert not path.exists()
+
+
+def test_release_with_an_owner_keeps_a_lock_nested_too_deeply_to_parse(batch):
+    _, _, cdir = batch
+    path = state.lock_path(cdir, "unit-31")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("[" * 100000 + "]" * 100000, encoding="utf-8")
+    assert state.release(cdir, "unit-31", "run-a") is False
+    assert path.exists()
+
+
+def test_the_record_cli_reports_an_unreadable_prior_as_an_error_line(batch, monkeypatch, capsys):
+    _, _, cdir = batch
+    _reject(cdir, "unit-14", 1)
+    path = state.record_path(cdir, "unit-14")
+    before = path.read_text(encoding="utf-8")
+    real_read = state._read_json
+
+    def busy(target):
+        if str(target) == str(path):
+            raise PermissionError(13, "in use", str(target))
+        return real_read(target)
+
+    monkeypatch.setattr(state, "_read_json", busy)
+    rc = state._main(["record", "--dir", str(cdir), "--id", "unit-14", "--status", "written",
+                      "--artifact", "out.md"])
+    err = capsys.readouterr().err
+    assert rc == 1
+    assert err.startswith("error: ")
+    assert "Traceback" not in err
+    monkeypatch.undo()
+    assert path.read_text(encoding="utf-8") == before

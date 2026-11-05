@@ -106,7 +106,9 @@ def test_downgrades_are_cheaper_and_the_default_is_first(tmp_path):
 
     assert projection["options"][0]["key"] == "haiku-write-opus-verify"
     assert by_key["haiku-write-opus-verify"]["share_of_default"] == 1.0
-    assert by_key["haiku-both"]["cost_usd"] < by_key["haiku-write-opus-verify"]["cost_usd"]
+    # The verifier is an adversarial review and runs on Opus, so no menu line
+    # puts it on Haiku.
+    assert "haiku-both" not in by_key
     assert by_key["haiku-write-opus-verify"]["cost_usd"] < by_key["opus-both"]["cost_usd"]
     # An effort change is not a price change, so it must not claim a discount.
     assert by_key["opus-low-effort"]["cost_usd"] == by_key["opus-both"]["cost_usd"]
@@ -339,7 +341,7 @@ def test_cli_project_renders_both_shapes(tmp_path):
     assert as_json.returncode == 0
     parsed = json.loads(as_json.stdout.decode())
     assert parsed["ask"] is True
-    assert len(parsed["options"]) == 4
+    assert len(parsed["options"]) == 3
 
     as_text = subprocess.run(
         [sys.executable, str(script), "project", "--units", str(units_file),
@@ -462,15 +464,16 @@ def test_each_unit_is_priced_on_its_own_prompt(tmp_path):
     big.write_text("x" * 600_000, encoding="utf-8")  # 150K tokens
     units = [{"id": "big", "jd": str(big)}] + make_units(3, tmp_path)
 
-    def haiku_both(batch):
+    def default(batch):
         options = estimate.project(batch, SPEC)["options"]
-        return next(o["cost_usd"] for o in options if o["key"] == "haiku-both")
+        return next(o["cost_usd"] for o in options if o["key"] == "haiku-write-opus-verify")
 
-    alone = sum(haiku_both([unit]) for unit in units)
+    alone = sum(default([unit]) for unit in units)
     # Each figure is rounded to the cent, so allow half a cent per figure summed.
-    assert haiku_both(units) == pytest.approx(alone, abs=0.005 * (len(units) + 1))
-    # The big unit alone is priced at $0.50 per million input tokens, both stages.
-    assert haiku_both(units[:1]) >= round(2 * 150_000 * 0.50 / 1e6, 2)
+    assert default(units) == pytest.approx(alone, abs=0.005 * (len(units) + 1))
+    # The big unit's Haiku writer pays $0.50 per million input tokens, and its
+    # Opus verifier $4.
+    assert default(units[:1]) >= round(150_000 * (0.50 + 4.00) / 1e6, 2)
 
 
 def test_an_empty_batch_costs_nothing(tmp_path):
@@ -496,7 +499,7 @@ def test_a_stale_choice_is_corrected_on_its_own(tmp_path, choice, worker, verifi
     write_config(cdir, payload)
     config = estimate.load_config(cdir)
     assert config["choice"] == expected
-    shown = choice if choice is not None else "null"
+    shown = choice if choice is not None else "not set"
     assert config["remapped"] == ["choice: {} -> {}".format(shown, expected)]
 
 
@@ -662,20 +665,19 @@ def test_a_config_nested_too_deep_reads_as_no_choice(tmp_path):
 
 # --- the projection's edges ----------------------------------------------
 
-def test_the_writer_output_alone_can_tip_the_verifier_into_the_long_tier(tmp_path):
-    payload = tmp_path / "payload.txt"
-    payload.write_text("x" * 360_000, encoding="utf-8")  # 90K tokens
-    units = [{"id": "u", "jd": str(payload)}]
-    spec_v = estimate._tokens(estimate.split_spec(SPEC)["verifier"])
-    at_line = 100_000 - spec_v - 90_000  # verifier prompt of exactly 100K tokens
+def test_one_more_payload_token_can_tip_the_writer_into_the_long_tier(tmp_path):
+    spec_w = estimate._tokens(estimate.split_spec(SPEC)["worker"])
+    at_line = 100_000 - spec_w  # writer prompt of exactly 100K tokens
 
-    def haiku_both(worker_out):
-        options = estimate.project(units, SPEC, worker_out=worker_out)["options"]
-        return next(o["cost_usd"] for o in options if o["key"] == "haiku-both")
+    def default(payload_tokens):
+        payload = tmp_path / "payload-{}.txt".format(payload_tokens)
+        payload.write_text("x" * (payload_tokens * estimate.CHARS_PER_TOKEN), encoding="utf-8")
+        options = estimate.project([{"id": "u", "jd": str(payload)}], SPEC)["options"]
+        return next(o["cost_usd"] for o in options if o["key"] == "haiku-write-opus-verify")
 
-    # One more output token puts about 100K verifier input tokens at $0.50
-    # instead of $0.10 per million, about four cents.
-    assert haiku_both(at_line + 1) - haiku_both(at_line) >= 0.03
+    # One more token puts about 100K writer input tokens at $0.50 instead of
+    # $0.10 per million, about four cents.
+    assert default(at_line + 1) - default(at_line) >= 0.03
 
 
 def test_the_default_option_is_always_the_whole_default(tmp_path):
@@ -793,3 +795,218 @@ def test_a_unit_named_like_the_config_leaves_the_saved_choice_alone(tmp_path, un
     state.record(cdir, unit_id, "verified")
     assert estimate.load_config(cdir) == saved
     assert state.read_record(cdir, unit_id)["status"] == "verified"
+
+
+# --- carried over from the claude-config copy ----------------------------
+
+def test_an_old_haiku_both_config_gets_an_opus_verifier(tmp_path):
+    """The haiku-both option is gone, and a verifier must not resume on Haiku."""
+    cdir = tmp_path / "checkpoint"
+    cdir.mkdir()
+    state.config_path(cdir).write_text(json.dumps({
+        "choice": "haiku-both",
+        "worker": {"model": "haiku"},
+        "verifier": {"model": "haiku"},
+    }), encoding="utf-8")
+
+    config = estimate.load_config(cdir)
+    assert config["worker"] == {"model": "haiku"}
+    assert config["verifier"] == {"model": "opus"}
+    assert config["choice"] == "haiku-write-opus-verify"
+    assert config["remapped"] == [
+        "verifier: haiku -> opus",
+        "choice: haiku-both -> haiku-write-opus-verify",
+    ]
+
+
+def test_haiku_both_is_no_longer_a_valid_choice(tmp_path):
+    projection = estimate.project(make_units(3, tmp_path), SPEC)
+    with pytest.raises(ValueError, match="unknown choice: haiku-both"):
+        estimate.save_config(tmp_path / "checkpoint", "haiku-both", projection["options"])
+
+
+def test_every_menu_verifier_runs_on_opus(tmp_path):
+    projection = estimate.project(make_units(3, tmp_path), SPEC)
+    for option in projection["options"]:
+        assert option["verifier"]["model"] == "opus", option["key"]
+        assert option["worker"]["model"] in estimate.STAGE_MODELS["worker"], option["key"]
+
+
+@pytest.mark.parametrize("effort", estimate.EFFORT_LEVELS)
+def test_every_known_effort_on_opus_is_kept(tmp_path, effort):
+    cdir = tmp_path / "checkpoint"
+    cdir.mkdir()
+    state.config_path(cdir).write_text(json.dumps({
+        "choice": "custom",
+        "worker": {"model": "opus", "effort": effort},
+        "verifier": {"model": "opus", "effort": effort},
+    }), encoding="utf-8")
+
+    config = estimate.load_config(cdir)
+    assert config["worker"] == {"model": "opus", "effort": effort}
+    assert config["verifier"] == {"model": "opus", "effort": effort}
+    if effort == "low":
+        assert config["remapped"] == ["choice: custom -> opus-low-effort"]
+    else:
+        assert "remapped" not in config
+
+
+def test_attempts_below_one_is_rejected(tmp_path):
+    with pytest.raises(ValueError, match="attempts must be at least 1"):
+        estimate.project(make_units(2, tmp_path), SPEC, attempts=0)
+    with pytest.raises(ValueError, match="cannot be negative"):
+        estimate.project(make_units(2, tmp_path), SPEC, worker_out=-1)
+
+
+def test_cli_an_unknown_choice_exits_1_without_a_traceback(tmp_path):
+    import subprocess
+
+    units_file = tmp_path / "units.json"
+    units_file.write_text(json.dumps(make_units(2, tmp_path)), encoding="utf-8")
+    spec_file = tmp_path / "spec.md"
+    spec_file.write_text(SPEC, encoding="utf-8")
+    script = Path(__file__).resolve().parents[1] / "scripts" / "estimate.py"
+
+    run = subprocess.run(
+        [sys.executable, str(script), "save-config", "--dir", str(tmp_path / "ck"),
+         "--choice", "haiku-both", "--units", str(units_file), "--spec", str(spec_file)],
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    err = run.stderr.decode()
+    assert run.returncode == 1
+    assert "error: unknown choice: haiku-both" in err
+    assert "Traceback" not in err
+
+
+@pytest.mark.parametrize(
+    "units_text,extra,code,message",
+    [
+        ("not json", [], 1, "error: "),
+        ('{"id": "a"}', [], 1, "error: units file must contain a JSON list"),
+        ('[{"name": "a"}]', [], 1, "error: every unit needs an 'id' field"),
+        ("[" * 100000 + "]" * 100000, [], 1, "error: units file is nested too deeply"),
+        (None, [], 1, "error: "),
+        ("[]", ["--attempts", "0"], 2, "must be 1 or more"),
+        ("[]", ["--attempts", "-3"], 2, "must be 1 or more"),
+        ("[]", ["--worker-out", "-1"], 2, "must be 0 or more"),
+    ],
+    ids=["bad-json", "not-a-list", "no-id", "too-deep", "missing-file", "zero-attempts",
+         "negative-attempts", "negative-output"],
+)
+def test_cli_bad_input_exits_without_a_traceback(tmp_path, units_text, extra, code, message):
+    import subprocess
+
+    units_file = tmp_path / "units.json"
+    if units_text is not None:
+        units_file.write_text(units_text, encoding="utf-8")
+    spec_file = tmp_path / "spec.md"
+    spec_file.write_text(SPEC, encoding="utf-8")
+    script = Path(__file__).resolve().parents[1] / "scripts" / "estimate.py"
+
+    run = subprocess.run(
+        [sys.executable, str(script), "project", "--units", str(units_file),
+         "--spec", str(spec_file)] + extra,
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    err = run.stderr.decode()
+    assert run.returncode == code
+    assert message in err
+    assert "Traceback" not in err
+
+
+@pytest.mark.parametrize("constant", ["NaN", "Infinity", "-Infinity"])
+def test_a_config_with_a_non_json_constant_reads_as_no_choice(tmp_path, constant):
+    cdir = tmp_path / "checkpoint"
+    cdir.mkdir()
+    state.config_path(cdir).write_text(
+        '{"choice": "opus-both", "worker": {"model": "opus", "x": %s}, "verifier": {"model": "opus"}}' % constant,
+        encoding="utf-8")
+    assert estimate.load_config(cdir) is None
+
+
+@pytest.mark.parametrize("number", ["1e999", "-1e999"])
+def test_a_config_with_an_out_of_range_number_reads_as_no_choice(tmp_path, number):
+    cdir = tmp_path / "checkpoint"
+    cdir.mkdir()
+    state.config_path(cdir).write_text(
+        '{"choice": "opus-both", "worker": {"model": "opus", "x": %s}, "verifier": {"model": "opus"}}' % number,
+        encoding="utf-8")
+    assert estimate.load_config(cdir) is None
+
+
+def test_a_spec_and_units_file_with_a_bom_still_project(tmp_path, capsys):
+    units_file = tmp_path / "units.json"
+    units_file.write_bytes(b"\xef\xbb\xbf" + json.dumps(make_units(2, tmp_path)).encode("utf-8"))
+    spec_file = tmp_path / "spec.md"
+    # The BOM sits right before the first heading, where it would hide it.
+    spec_file.write_bytes(b"\xef\xbb\xbf" + SPEC.split("\n", 2)[2].encode("utf-8"))
+    assert estimate._main(["project", "--units", str(units_file), "--spec", str(spec_file)]) == 0
+    assert json.loads(capsys.readouterr().out)["units"] == 2
+
+
+def test_an_output_count_too_large_to_price_is_a_value_error(tmp_path):
+    # 10**400 does not fit in a float.
+    with pytest.raises(ValueError, match="too large"):
+        estimate.project(make_units(2, tmp_path), SPEC, worker_out=10 ** 400)
+    with pytest.raises(ValueError, match="too large"):
+        estimate.project(make_units(2, tmp_path), SPEC, verifier_out=10 ** 400)
+
+
+@pytest.mark.parametrize("stage_value", [
+    [[[[["haiku"] * 50] * 5]]],
+    {"model": {"name": "x" * 500}},
+    {"model": "opus", "effort": ["low"] * 200},
+], ids=["nested-list", "long-model", "long-effort"])
+def test_a_remap_note_shows_at_most_80_characters_of_a_value(tmp_path, stage_value):
+    cdir = tmp_path / "checkpoint"
+    cdir.mkdir()
+    state.config_path(cdir).write_text(json.dumps({
+        "choice": "haiku-write-opus-verify", "worker": stage_value, "verifier": {"model": "opus"},
+    }), encoding="utf-8")
+    config = estimate.load_config(cdir)
+    assert config["remapped"]
+    for note in config["remapped"]:
+        assert len(note) <= 160, note
+        assert "..." in note or len(note) < 80
+
+
+def test_a_long_choice_value_is_cut_in_the_note(tmp_path):
+    cdir = tmp_path / "checkpoint"
+    cdir.mkdir()
+    state.config_path(cdir).write_text(json.dumps({
+        "choice": "c" * 1000, "worker": {"model": "haiku"}, "verifier": {"model": "opus"},
+    }), encoding="utf-8")
+    config = estimate.load_config(cdir)
+    assert config["remapped"] == ["choice: {}... -> haiku-write-opus-verify".format("c" * 77)]
+
+
+@pytest.mark.parametrize("body", [
+    {"worker": {"model": "haiku"}, "verifier": {"model": "opus"}},
+    {"choice": None, "worker": {"model": "haiku"}, "verifier": {"model": "opus"}},
+], ids=["no-key", "null"])
+def test_a_config_with_no_choice_says_not_set(tmp_path, body):
+    # "choice: None -> ..." read like an error.
+    cdir = tmp_path / "checkpoint"
+    cdir.mkdir()
+    state.config_path(cdir).write_text(json.dumps(body), encoding="utf-8")
+    config = estimate.load_config(cdir)
+    assert config["choice"] == "haiku-write-opus-verify"
+    assert config["remapped"] == ["choice: not set -> haiku-write-opus-verify"]
+
+
+def test_a_haiku_verifier_with_an_effort_moves_to_opus_without_it(tmp_path):
+    cdir = tmp_path / "checkpoint"
+    write_config(cdir, {"choice": "custom", "worker": {"model": "opus"},
+                        "verifier": {"model": "Haiku 5.5", "effort": "low"}})
+    config = estimate.load_config(cdir)
+    assert config["verifier"] == {"model": "opus"}
+    assert config["remapped"] == [
+        "verifier: Haiku 5.5 -> opus",
+        "verifier: effort low dropped, it came with a model that is not allowed",
+        "choice: custom -> opus-both",
+    ]
+
+
+def test_or_default_never_returns_a_haiku_verifier(tmp_path):
+    cdir = tmp_path / "checkpoint"
+    write_config(cdir, {"choice": "haiku-both", "worker": {"model": "haiku"},
+                        "verifier": {"model": "haiku"}})
+    assert estimate.load_config(cdir, or_default=True)["verifier"] == {"model": "opus"}

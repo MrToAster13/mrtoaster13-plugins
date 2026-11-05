@@ -17,10 +17,12 @@ export const meta = {
 // effort it cannot pass, and returns the defaults (Haiku writer, Opus
 // verifier) when no readable choice was saved. This script does not correct
 // anything. Before any agent runs it refuses a stage that is not an object,
-// names a model other than opus or haiku, or carries an effort load-config
-// would never emit (one on haiku, or one that is not plain lowercase
-// letters), so a stray 'sonnet' never reaches agent() and the session model
-// is never inherited. Which levels are valid stays in estimate.py.
+// names a model other than opus or haiku, puts the verifier on anything but
+// opus, or carries an effort load-config would never emit (one on haiku, or
+// one that is not plain lowercase letters), so a stray 'sonnet' never reaches
+// agent() and the session model is never inherited. The verifier is an
+// adversarial review, which runs on Opus. Which levels are valid stays in
+// estimate.py.
 const {
   units = [],
   worker = '',
@@ -31,6 +33,33 @@ const {
   priorFailures = {},
   models = null,
 } = args || {}
+
+const ALLOWED_MODELS = ['opus', 'haiku']
+const STAGES = ['worker', 'verifier']
+const isObject = (value) => value !== null && typeof value === 'object' && !Array.isArray(value)
+// Returns why models cannot run, or null when every stage names opus or haiku
+// and any effort could have come from load-config.
+const refusal = () => {
+  if (!isObject(models)) return `args.models is ${JSON.stringify(models)}, not the output of estimate.py load-config --or-default`
+  for (const stage of STAGES) {
+    const cfg = models[stage]
+    if (!isObject(cfg)) return `models.${stage} is ${JSON.stringify(cfg)}, not a model setting`
+    if (!ALLOWED_MODELS.includes(cfg.model)) {
+      return `models.${stage}.model is ${JSON.stringify(cfg.model)}, not one of ${ALLOWED_MODELS.join(', ')}`
+    }
+    if (stage === 'verifier' && cfg.model !== 'opus') {
+      return `models.verifier.model is ${JSON.stringify(cfg.model)}, but the verifier runs on opus only`
+    }
+    if (cfg.effort === undefined || cfg.effort === null) continue
+    if (typeof cfg.effort !== 'string' || !/^[a-z]+$/.test(cfg.effort)) {
+      return `models.${stage}.effort is ${JSON.stringify(cfg.effort)}, not a lowercase effort level`
+    }
+    if (cfg.model === 'haiku') {
+      return `models.${stage}.effort is ${JSON.stringify(cfg.effort)}, but haiku takes no effort override`
+    }
+  }
+  return null
+}
 
 // priorFailures is `state.py failures` output: {id: {failures, reason}}. A
 // unit the verifier rejected in an earlier run continues from that count, so
@@ -47,29 +76,6 @@ const priorFor = (id) => {
   return { failures, reason }
 }
 
-const ALLOWED_MODELS = ['opus', 'haiku']
-const STAGES = ['worker', 'verifier']
-const isObject = (value) => value !== null && typeof value === 'object' && !Array.isArray(value)
-// Returns why models cannot run, or null when every stage names opus or haiku
-// and any effort could have come from load-config.
-const refusal = () => {
-  if (!isObject(models)) return `args.models is ${JSON.stringify(models)}, not the output of estimate.py load-config --or-default`
-  for (const stage of STAGES) {
-    const cfg = models[stage]
-    if (!isObject(cfg)) return `models.${stage} is ${JSON.stringify(cfg)}, not a model setting`
-    if (!ALLOWED_MODELS.includes(cfg.model)) {
-      return `models.${stage}.model is ${JSON.stringify(cfg.model)}, not one of ${ALLOWED_MODELS.join(', ')}`
-    }
-    if (cfg.effort === undefined || cfg.effort === null) continue
-    if (typeof cfg.effort !== 'string' || !/^[a-z]+$/.test(cfg.effort)) {
-      return `models.${stage}.effort is ${JSON.stringify(cfg.effort)}, not a lowercase effort level`
-    }
-    if (cfg.model === 'haiku') {
-      return `models.${stage}.effort is ${JSON.stringify(cfg.effort)}, but haiku takes no effort override`
-    }
-  }
-  return null
-}
 const stageOpts = (stage, label, phase, schema) => {
   const { model, effort } = models[stage]
   const opts = { label, phase, schema, model }
