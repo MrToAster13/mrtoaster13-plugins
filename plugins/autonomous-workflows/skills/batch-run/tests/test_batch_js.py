@@ -531,3 +531,10 @@ def test_batch_js_spends_nothing_on_a_unit_already_at_the_cap():
 def test_batch_js_reads_a_bogus_prior_count_as_zero(bogus):
     run = rejected_run([{"id": "a"}], maxAttempts=2, priorFailures={"a": bogus})
     assert len(run["prompts"]) == 4
+
+
+def test_a_zero_max_attempts_reports_no_attempt_not_a_cap():
+    # ELI-917. No rejection happened, so the reason must not claim one.
+    run = rejected_run([{"id": "a"}], maxAttempts=0)
+    assert run["prompts"] == []
+    assert run["result"]["failed"] == [{"id": "a", "reason": "no attempt completed"}]

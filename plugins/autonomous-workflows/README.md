@@ -54,7 +54,7 @@ Green tests are the input, not the verdict. An adversarial sub-agent then hunts 
 
 Runs N similar work units (documents, resumes, migrations) through a writer agent and an independent verifier agent that never saw the writer's reasoning. Each unit's outcome is written to disk the moment it lands, so a session killed on limits loses only the units in flight, and a resume recomputes the todo list from the checkpoint instead of trusting memory.
 
-The rule: **report from disk, never from the workflow's return value.** Includes a cost estimator that prices the run in dollars and a model menu (downgrade the writer before the verifier; a cheap verifier waves through invented facts). Ships with a Python state machine and its tests.
+The rule: **report from disk, never from the workflow's return value.** Includes a cost estimator that prices the run in dollars and a model menu (the writer can run cheaper, but the verifier always runs on Opus, because a cheap verifier waves through invented facts). Ships with a Python state machine and its tests.
 
 ## Prerequisites for `/factory`
 

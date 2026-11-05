@@ -1240,3 +1240,86 @@ def test_release_matches_an_owner_claim_took_as_given(batch, owner):
     assert state.claim(cdir, "unit-28", owner=owner) is True
     assert state.release(cdir, "unit-28", owner) is True
     assert not state.lock_path(cdir, "unit-28").exists()
+
+
+# --- ELI-917, ported from the plugins copy ----------------------------------
+
+def test_a_record_whose_prior_cannot_be_read_raises_instead_of_resetting_the_count(batch, monkeypatch):
+    # A sharing violation that outlasts the read's retries must not pass for
+    # a missing record; writing over it would reset failures to 0.
+    _, _, cdir = batch
+    _reject(cdir, "unit-13", 1)
+    path = state.record_path(cdir, "unit-13")
+    before = path.read_text(encoding="utf-8")
+    real_read = state._read_json
+
+    def busy(target):
+        if str(target) == str(path):
+            raise PermissionError(13, "in use", str(target))
+        return real_read(target)
+
+    monkeypatch.setattr(state, "_read_json", busy)
+    with pytest.raises(PermissionError):
+        state.record(cdir, "unit-13", "written", artifact="out.md")
+    monkeypatch.undo()
+    assert path.read_text(encoding="utf-8") == before
+    assert state.read_record(cdir, "unit-13")["failures"] == 1
+
+
+def test_a_record_over_a_malformed_file_still_starts_fresh(batch):
+    _, _, cdir = batch
+    path = state.record_path(cdir, "unit-14")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("{", encoding="utf-8")
+    assert state.record(cdir, "unit-14", "written", artifact="out.md")["failures"] == 0
+
+
+def test_release_with_an_owner_retries_a_delete_windows_reports_in_use(batch, monkeypatch):
+    _, _, cdir = batch
+    assert state.claim(cdir, "unit-29", owner="run-a") is True
+    path = state.lock_path(cdir, "unit-29")
+    real_unlink, calls = os.unlink, []
+
+    # Only deletes of the lock count. The release also deletes its steal
+    # guard, which is not what this test is about.
+    def busy_once(target, *rest, **kw):
+        if str(target) == str(path):
+            calls.append(target)
+            if len(calls) == 1:
+                raise PermissionError(13, "in use", target)
+        return real_unlink(target, *rest, **kw)
+
+    monkeypatch.setattr(state.os, "unlink", busy_once)
+    assert state.release(cdir, "unit-29", "run-a") is True
+    assert len(calls) == 2
+    assert not path.exists()
+
+
+def test_a_reasonless_rejection_does_not_report_an_older_reason(batch):
+    # The last rejection carried no reason, so failures reports None both
+    # before and after the retry's written record.
+    units, _, cdir = batch
+    _reject(cdir, "unit-15", 1)
+    state.record(cdir, "unit-15", "written", artifact="out.md")
+    state.record(cdir, "unit-15", "failed")
+    assert state.failure_counts(cdir, units)["unit-15"] == {"failures": 2, "reason": None}
+    state.record(cdir, "unit-15", "written", artifact="out.md")
+    assert state.failure_counts(cdir, units)["unit-15"] == {"failures": 2, "reason": None}
+
+
+def test_release_reads_a_lock_saved_with_a_byte_order_mark(batch):
+    _, _, cdir = batch
+    path = state.lock_path(cdir, "unit-30")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(b"\xef\xbb\xbf" + json.dumps({"owner": "run-a", "at": 1}).encode())
+    assert state.release(cdir, "unit-30", "run-a") is True
+    assert not path.exists()
+
+
+def test_release_with_an_owner_keeps_a_lock_nested_too_deeply_to_parse(batch):
+    _, _, cdir = batch
+    path = state.lock_path(cdir, "unit-31")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("[" * 100000 + "]" * 100000, encoding="utf-8")
+    assert state.release(cdir, "unit-31", "run-a") is False
+    assert path.exists()

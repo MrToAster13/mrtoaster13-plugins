@@ -160,7 +160,7 @@ const verifierPrompt = (unit, art) =>
 
 const runUnit = async (unit) => {
   const prior = priorFor(unit.id)
-  if (prior.failures >= maxAttempts) {
+  if (prior.failures > 0 && prior.failures >= maxAttempts) {
     return { id: unit.id, status: 'failed', attempts: 0,
       reason: `attempt cap reached: rejected ${prior.failures} times already (maxAttempts ${maxAttempts})` }
   }

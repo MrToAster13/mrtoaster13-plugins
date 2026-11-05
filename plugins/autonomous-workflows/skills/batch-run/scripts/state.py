@@ -26,7 +26,7 @@ CLI:
     python state.py failures --units units.json --dir checkpoint
     python state.py record  --dir checkpoint --id ID --status verified [...]
     python state.py report  --units units.json --dir checkpoint [--strict]
-    python state.py claim   --dir checkpoint --id ID [--lease-seconds 1800]
+    python state.py claim   --dir checkpoint --id ID [--lease-seconds 1800] [--owner OWNER]
     python state.py release --dir checkpoint --id ID [--owner OWNER]
 """
 
@@ -200,10 +200,23 @@ def read_record(checkpoint_dir, unit_id):
     filesystem that ignores case, opening `alpha.json` reads that file. The
     unit_id check stops such a leftover record from marking `alpha` done.
     """
+    try:
+        return _read_record(checkpoint_dir, unit_id)
+    except OSError:
+        return None
+
+
+def _read_record(checkpoint_dir, unit_id):
+    """read_record, except that an OSError other than a missing file is
+    raised. record() needs that: a file Windows still reports in use after
+    the retries is not a missing record, and writing one over it would reset
+    the failures count to 0."""
     path = record_path(checkpoint_dir, unit_id)
     try:
         data = _read_json(path)
-    except (OSError, ValueError, RecursionError):
+    except FileNotFoundError:
+        return None
+    except (ValueError, RecursionError):
         return None
     if not isinstance(data, dict) or data.get("status") not in STATUSES:
         return None
@@ -213,10 +226,15 @@ def read_record(checkpoint_dir, unit_id):
 
 
 def record(checkpoint_dir, unit_id, status, artifact=None, reason=None, worker=None):
-    """Write (or overwrite) a unit's record atomically."""
+    """Write (or overwrite) a unit's record atomically.
+
+    Raises the OSError if the old record exists but cannot be read, such as
+    one Windows still reports in use after the retries, rather than writing
+    over it with its counts lost.
+    """
     if status not in STATUSES:
         raise ValueError("status must be one of {}".format(", ".join(STATUSES)))
-    prior = read_record(checkpoint_dir, unit_id) or {}
+    prior = _read_record(checkpoint_dir, unit_id) or {}
     attempt = prior.get("attempt", 0)
     if status in ("written", "failed"):
         attempt = attempt + 1
@@ -244,9 +262,12 @@ def record(checkpoint_dir, unit_id, status, artifact=None, reason=None, worker=N
         if key not in payload and key in prior:
             payload[key] = prior[key]
     # The last rejection's reason does outlive a retry's `written`: a resumed
-    # writer needs it, and `failures` hands it to batch.js.
-    if status == "failed" and reason is not None:
-        payload["last_rejection"] = reason
+    # writer needs it, and `failures` hands it to batch.js. A rejection with
+    # no reason clears it, so an older rejection's reason is not reported as
+    # the last one.
+    if status == "failed":
+        if reason is not None:
+            payload["last_rejection"] = reason
     elif "last_rejection" in prior:
         payload["last_rejection"] = prior["last_rejection"]
     _atomic_write_json(record_path(checkpoint_dir, unit_id), payload)
@@ -583,7 +604,7 @@ def _lock_owner(path):
     """
     def read():
         seen = _identity(os.stat(str(path)))
-        with open(str(path), "r", encoding="utf-8") as fh:
+        with open(str(path), "r", encoding="utf-8-sig") as fh:
             return seen, fh.read()
     try:
         seen, body = _retry_while_in_use(read)
@@ -591,7 +612,7 @@ def _lock_owner(path):
         return None
     try:
         data = json.loads(body)
-    except ValueError:
+    except (ValueError, RecursionError):
         return None
     owner = data.get("owner") if isinstance(data, dict) else None
     return (seen, owner) if isinstance(owner, str) else None
