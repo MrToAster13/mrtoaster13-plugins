@@ -13,7 +13,8 @@ folders directly under home that have no `.git`.
 Read-only: no fetch, no push, no ref, branch, file or config change. Every
 git call runs with --no-optional-locks so `git status` does not rewrite the
 index, and with GIT_NO_LAZY_FETCH=1 so a partial clone does not fetch missing
-objects. Status blanks every filter driver so no clean filter runs. git still
+objects. Status blanks every filter driver and stays out of submodules, so
+no clean filter runs. git still
 refreshes a split index's sharedindex mtime on read. Standard library only. Exit 0 on success, 2 on bad arguments or a
 --root or --home that is not a directory.
 """
@@ -44,13 +45,19 @@ GIT_LOCAL_ENV = ("GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_CONFIG", "GIT_CONFIG_P
                  "GIT_SHALLOW_FILE", "GIT_COMMON_DIR")
 
 
-def _git(path, *args):
+def _git(path, *args, config=()):
     """Run a read-only git command in path. Return stdout, or None on failure.
 
     core.fsmonitor=false stops `git status` from starting a watcher daemon.
+    config is (key, value) pairs, passed through GIT_CONFIG_KEY_n because a
+    key may hold an = that `-c` would split on.
     """
     env = {k: v for k, v in os.environ.items() if k not in GIT_LOCAL_ENV}
     env.update(GIT_OPTIONAL_LOCKS="0", GIT_TERMINAL_PROMPT="0", GIT_NO_LAZY_FETCH="1")
+    env["GIT_CONFIG_COUNT"] = str(len(config))
+    for i, (k, v) in enumerate(config):
+        env["GIT_CONFIG_KEY_%d" % i] = k
+        env["GIT_CONFIG_VALUE_%d" % i] = v
     try:
         out = subprocess.run(["git", "--no-optional-locks", "-c", "core.fsmonitor=false",
                               "-C", str(path)] + list(args),
@@ -152,13 +159,13 @@ def _redact(url):
 
 
 def _no_filters(path):
-    """-c overrides that blank every configured filter driver, so `git status`
+    """Config that blanks every configured filter driver, so `git status`
     re-hashing a touched file runs no clean filter (git-lfs, for one)."""
     names = _lines(_git(path, "config", "--name-only", "--get-regexp", r"^filter\..*\.(clean|process)$"))
     out = []
     for driver in sorted({n[len("filter."):].rsplit(".", 1)[0] for n in names}):
-        for key in ("clean", "process", "required"):
-            out += ["-c", "filter.%s.%s=%s" % (driver, key, "false" if key == "required" else "")]
+        out += [("filter.%s.clean" % driver, ""), ("filter.%s.process" % driver, ""),
+                ("filter.%s.required" % driver, "false")]
     return out
 
 
@@ -171,10 +178,10 @@ def repo_report(path):
     path = Path(path)
     failed = []
 
-    def required(*args):
-        out = _git(path, *args)
+    def required(*args, config=()):
+        out = _git(path, *args, config=config)
         if out is None:
-            failed.append(next(a for a in args if not a.startswith("-") and "=" not in a))
+            failed.append(args[0])
             return ""
         return out
 
@@ -195,8 +202,11 @@ def repo_report(path):
     branch = head_ref[len("refs/heads/"):] if head_ref.startswith("refs/heads/") else "(detached)"
     # A bare repo, such as the .bare behind a worktrees-only layout, has no files
     # to be dirty, and its linked worktrees' rows show the shared stash.
-    dirty = 0 if bare else len(_lines(required(*_no_filters(path), "status", "--porcelain=v1",
-                                               "--untracked-files=normal")))
+    # --ignore-submodules=dirty keeps status out of each submodule, whose own
+    # filters it would run; a submodule's changes show in its own row.
+    dirty = 0 if bare else len(_lines(required("status", "--porcelain=v1", "--untracked-files=normal",
+                                               "--ignore-submodules=dirty",
+                                               config=_no_filters(path))))
     stashes = 0 if bare else len(_lines(required("stash", "list")))
     wt_lines = _lines(required("worktree", "list", "--porcelain"))
     worktrees = [l[len("worktree "):] for l in wt_lines if l.startswith("worktree ")]

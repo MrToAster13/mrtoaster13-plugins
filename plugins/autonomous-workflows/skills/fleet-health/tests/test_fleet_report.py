@@ -816,3 +816,56 @@ def test_eli1043_m1_status_does_not_run_a_configured_clean_filter(tmp_path):
 def test_eli1043_m3_an_ipv6_host_with_an_at_sign_in_the_path_is_kept():
     url = "https://[2001:db8::1]/team-a/tool@v2.git"
     assert fleet_report._redact(url) == url
+
+
+# Regression tests for the ELI-1043 interrogate round 4 findings at 426cd70.
+
+def _probe_filter(repo, driver, marker):
+    """Commit a.bin under filter=<driver>, then configure that driver to touch marker."""
+    with open(str(repo / ".gitattributes"), "a") as f:
+        f.write("*.bin filter=%s\n" % driver)
+    (repo / "a.bin").write_text("x\n")
+    git(repo, "add", ".")
+    git(repo, "commit", "-q", "-m", "probe")
+    with open(str(repo / ".git" / "config"), "a") as f:
+        f.write('[filter "%s"]\n\tclean = touch \'%s\'; cat\n\trequired = true\n'
+                % (driver, marker.as_posix()))
+    os.utime(str(repo / "a.bin"), (1, 1))
+
+
+def test_eli1043_n1_a_submodule_filter_does_not_run_from_the_parent_row(tmp_path):
+    src = tmp_path / "subsrc"
+    src.mkdir()
+    git(src, "init", "-q")
+    (src / ".gitattributes").write_text("*.bin filter=subprobe\n")
+    (src / "a.bin").write_text("x\n")
+    git(src, "add", ".")
+    git(src, "commit", "-q", "-m", "a")
+    sup = tmp_path / "home" / "super"
+    sup.mkdir(parents=True)
+    git(sup, "init", "-q")
+    commit(sup, "README")
+    git(sup, "-c", "protocol.file.allow=always", "submodule", "add", "-q", str(src), "sub")
+    git(sup, "commit", "-q", "-m", "sub")
+    marker = tmp_path / "sub-filter-ran"
+    git(sup / "sub", "config", "filter.subprobe.clean", "touch '%s'; cat" % marker.as_posix())
+    os.utime(str(sup / "sub" / "a.bin"), (1, 1))
+
+    r = fleet_report.repo_report(sup)
+
+    assert not marker.exists()
+    assert r["error"] is None
+
+
+def test_eli1043_n2_a_driver_name_with_an_equals_sign_is_blanked(tmp_path):
+    repo = tmp_path / "eq"
+    repo.mkdir()
+    git(repo, "init", "-q")
+    commit(repo, "seed.txt")
+    marker = tmp_path / "eq-filter-ran"
+    _probe_filter(repo, "eq=sign", marker)
+
+    r = fleet_report.repo_report(repo)
+
+    assert not marker.exists()
+    assert r["error"] is None
