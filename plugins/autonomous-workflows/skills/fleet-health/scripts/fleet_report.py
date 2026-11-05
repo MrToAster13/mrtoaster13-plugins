@@ -48,7 +48,8 @@ GIT_LOCAL_ENV = ("GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_CONFIG", "GIT_CONFIG_P
 def _git(path, *args, config=()):
     """Run a read-only git command in path. Return stdout, or None on failure.
 
-    core.fsmonitor=false stops `git status` from starting a watcher daemon.
+    core.fsmonitor=false stops `git status` from starting a watcher daemon, and
+    log.showSignature=false stops `git stash list` from running gpg.program.
     config is (key, value) pairs, passed through GIT_CONFIG_KEY_n because a
     key may hold an = that `-c` would split on.
     """
@@ -60,7 +61,7 @@ def _git(path, *args, config=()):
         env["GIT_CONFIG_VALUE_%d" % i] = v
     try:
         out = subprocess.run(["git", "--no-optional-locks", "-c", "core.fsmonitor=false",
-                              "-C", str(path)] + list(args),
+                              "-c", "log.showSignature=false", "-C", str(path)] + list(args),
                              capture_output=True, text=True, encoding="utf-8",
                              errors="replace", timeout=60, env=env)
     except (OSError, subprocess.SubprocessError):

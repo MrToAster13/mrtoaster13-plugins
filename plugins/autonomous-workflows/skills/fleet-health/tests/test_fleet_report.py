@@ -888,3 +888,29 @@ def test_eli1043_o1_a_submodule_discovery_misses_still_gets_its_own_row(tmp_path
     reports = fleet_report.build_report([root], root)["repos"]
 
     assert {key(r["path"]): r["dirty"] for r in reports}.get(key(sup / subpath)) == 1
+
+
+@pytest.mark.skipif(os.name == "nt", reason="the fake gpg is a shell script")
+def test_eli1043_o2_stash_list_does_not_run_gpg_for_a_signed_stash_entry(tmp_path):
+    repo = tmp_path / "signed"
+    repo.mkdir()
+    git(repo, "init", "-q")
+    commit(repo, "a.txt")
+    tree = git(repo, "rev-parse", "HEAD^{tree}")
+    head = git(repo, "rev-parse", "HEAD")
+    body = ("tree %s\nparent %s\nauthor t <t@example.invalid> 1 +0000\n"
+            "committer t <t@example.invalid> 1 +0000\ngpgsig -----BEGIN PGP SIGNATURE-----\n"
+            " AAAA\n -----END PGP SIGNATURE-----\n\nsigned\n" % (tree, head))
+    signed = subprocess.run(["git", "-C", str(repo), "hash-object", "-t", "commit", "-w", "--stdin"],
+                            input=body, capture_output=True, text=True, check=True).stdout.strip()
+    git(repo, "update-ref", "--create-reflog", "refs/stash", signed)
+    marker = tmp_path / "gpg-ran"
+    fake = tmp_path / "fakegpg"
+    fake.write_text("#!/bin/sh\ntouch '%s'\n" % marker.as_posix())
+    fake.chmod(0o755)
+    git(repo, "config", "log.showSignature", "true")
+    git(repo, "config", "gpg.program", str(fake))
+
+    fleet_report.repo_report(repo)
+
+    assert not marker.exists()
