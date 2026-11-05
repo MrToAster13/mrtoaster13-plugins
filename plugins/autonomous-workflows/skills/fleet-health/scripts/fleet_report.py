@@ -12,7 +12,11 @@ folders directly under home that have no `.git`.
 
 Read-only: no fetch, no push, no ref, branch, file or config change. Every
 git call runs with --no-optional-locks so `git status` does not rewrite the
-index. Standard library only. Exit 0 on success, 2 on bad arguments.
+index, and with GIT_NO_LAZY_FETCH=1 so a partial clone does not fetch missing
+objects. Status blanks every filter driver and stays out of submodules, so
+no clean filter runs. git still
+refreshes a split index's sharedindex mtime on read. Standard library only. Exit 0 on success, 2 on bad arguments or a
+--root or --home that is not a directory.
 """
 
 from __future__ import annotations
@@ -26,28 +30,58 @@ import subprocess
 import sys
 from pathlib import Path
 
+DEFAULT_PORTS = {"ssh": "22", "git+ssh": "22", "ssh+git": "22", "https": "443",
+                 "http": "80", "git": "9418"}
 SKIP_DIRS = {"appdata", "temp", "tmp", ".cache", "node_modules", ".venv", "venv",
              "__pycache__", "$recycle.bin"}
 LEFTOVER_PATTERNS = ("*-backup-*", "*-test-run*")
 MAX_DEPTH = 6
+# `git rev-parse --local-env-vars`: an inherited GIT_DIR or GIT_INDEX_FILE, as in
+# a hook, would point every call at one repo.
+GIT_LOCAL_ENV = ("GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_CONFIG", "GIT_CONFIG_PARAMETERS",
+                 "GIT_CONFIG_COUNT", "GIT_OBJECT_DIRECTORY", "GIT_DIR", "GIT_WORK_TREE",
+                 "GIT_IMPLICIT_WORK_TREE", "GIT_GRAFT_FILE", "GIT_INDEX_FILE",
+                 "GIT_NO_REPLACE_OBJECTS", "GIT_REPLACE_REF_BASE", "GIT_PREFIX",
+                 "GIT_SHALLOW_FILE", "GIT_COMMON_DIR")
 
 
-def _git(path, *args):
+def _git(path, *args, config=()):
     """Run a read-only git command in path. Return stdout, or None on failure.
 
-    core.fsmonitor=false stops `git status` from starting a watcher daemon.
+    core.fsmonitor=false stops `git status` from starting a watcher daemon, and
+    log.showSignature=false stops `git stash list` from running gpg.program.
+    config is (key, value) pairs, passed through GIT_CONFIG_KEY_n because a
+    key may hold an = that `-c` would split on.
     """
-    env = dict(os.environ, GIT_OPTIONAL_LOCKS="0", GIT_TERMINAL_PROMPT="0")
+    env = {k: v for k, v in os.environ.items() if k not in GIT_LOCAL_ENV}
+    env.update(GIT_OPTIONAL_LOCKS="0", GIT_TERMINAL_PROMPT="0", GIT_NO_LAZY_FETCH="1")
+    env["GIT_CONFIG_COUNT"] = str(len(config))
+    for i, (k, v) in enumerate(config):
+        env["GIT_CONFIG_KEY_%d" % i] = k
+        env["GIT_CONFIG_VALUE_%d" % i] = v
     try:
         out = subprocess.run(["git", "--no-optional-locks", "-c", "core.fsmonitor=false",
-                              "-C", str(path)] + list(args),
+                              "-c", "log.showSignature=false", "-C", str(path)] + list(args),
                              capture_output=True, text=True, encoding="utf-8",
-                             errors="replace", timeout=60, env=env)
+                             errors="surrogateescape", timeout=60, env=env)
     except (OSError, subprocess.SubprocessError):
         return None
     if out.returncode != 0:
         return None
     return out.stdout
+
+
+def _real(p):
+    """p with symlinks resolved, or None when it cannot be, such as a symlink
+    loop, which Python 3.12 and older raise RuntimeError for."""
+    try:
+        return Path(p).resolve()
+    except (OSError, RuntimeError):
+        return None
+
+
+def _key(p):
+    return os.path.normcase(str(_real(p) or os.path.abspath(str(p))))
 
 
 def discover(roots, max_depth=MAX_DEPTH):
@@ -65,7 +99,7 @@ def discover(roots, max_depth=MAX_DEPTH):
                 continue
             names = {e.name for e in entries}
             if ".git" in names:
-                k = os.path.normcase(str(d.resolve()))
+                k = _key(d)
                 if k not in seen:
                     seen.add(k)
                     found.append(d)
@@ -82,7 +116,7 @@ def discover(roots, max_depth=MAX_DEPTH):
                 if e.name.lower() in SKIP_DIRS:
                     # A repo may itself be named tmp or venv. Check it, do not descend.
                     if os.path.lexists(os.path.join(e.path, ".git")):
-                        k = os.path.normcase(str(Path(e.path).resolve()))
+                        k = _key(e.path)
                         if k not in seen:
                             seen.add(k)
                             found.append(Path(e.path))
@@ -96,41 +130,119 @@ def _lines(text):
 
 
 def _default_branch(path):
-    ref = _git(path, "symbolic-ref", "--short", "-q", "refs/remotes/origin/HEAD")
-    if ref and ref.strip():
-        return ref.strip()
-    for name in ("origin/main", "origin/master"):
+    """(default, problem): origin/HEAD's target if that ref exists, else
+    origin/main or origin/master. problem is set when origin/HEAD points to a
+    missing ref and neither fallback exists."""
+    ref = (_git(path, "symbolic-ref", "-q", "refs/remotes/origin/HEAD") or "").strip()
+    ref = ref[len("refs/remotes/"):] if ref.startswith("refs/remotes/") else ref
+    for name in ([ref] if ref else []) + ["origin/main", "origin/master"]:
         if _git(path, "rev-parse", "--verify", "-q", "refs/remotes/" + name) is not None:
-            return name
-    return None
+            return name, None
+    return None, ("origin/HEAD points to missing %s" % ref) if ref else None
+
+
+def _expected_git_dir(path):
+    """The git dir that path's own .git names: the dir itself, or a gitdir: file's target."""
+    dot = path / ".git"
+    if dot.is_dir():
+        return dot
+    if not dot.is_file():
+        return None
+    try:
+        with open(dot, encoding="utf-8", errors="surrogateescape") as f:
+            line = f.readline(4096).rstrip("\r\n")
+    except OSError:
+        return None
+    if not line.startswith("gitdir:"):
+        return None
+    return path / line[len("gitdir:"):].strip()
+
+
+def _redact(url):
+    """Drop the user:password@ part of a URL. A raw @ may sit inside the
+    password, and a raw / there shows as a port that is not a number."""
+    m = re.match(r"^((?:[a-z][a-z0-9+.-]*::)?[a-z][a-z0-9+.-]*://)([^/]*)(.*)$", url, re.I)
+    if not m:
+        return url
+    scheme, authority, rest = m.groups()
+    if "@" in authority:
+        return scheme + authority.rsplit("@", 1)[1] + rest
+    if not authority.startswith("[") and re.match(r"^[^:]*:(?!\d*$)", authority) and "@" in rest:
+        return scheme + rest.rsplit("@", 1)[1]
+    return url
+
+
+def _no_filters(path):
+    """Config that blanks every configured filter driver, so `git status`
+    re-hashing a touched file runs no clean filter (git-lfs, for one)."""
+    names = _lines(_git(path, "config", "--name-only", "--get-regexp", r"^filter\..*\.(clean|process)$"))
+    out = []
+    for driver in sorted({n[len("filter."):].rsplit(".", 1)[0] for n in names}):
+        out += [("filter.%s.clean" % driver, ""), ("filter.%s.process" % driver, ""),
+                ("filter.%s.required" % driver, "false")]
+    return out
+
+
+def _same_dir(a, b):
+    return _key(a) == _key(b)
 
 
 def repo_report(path):
     """One repo's state, read without changing anything."""
     path = Path(path)
-    error = None
-    if _git(path, "rev-parse", "--git-dir") is None:
-        error = "git cannot read this repo; check it by hand"
-    origin = (_git(path, "config", "--get", "remote.origin.url") or "").strip()
-    # Never print a user:token@ part of a URL.
-    origin = re.sub(r"^([a-z][a-z0-9+.-]*://)[^@/]*@", r"\1", origin, flags=re.I)
-    branch = (_git(path, "symbolic-ref", "--short", "-q", "HEAD") or "").strip() or "(detached)"
-    dirty = len(_lines(_git(path, "status", "--porcelain=v1")))
-    has_head = _git(path, "rev-parse", "--verify", "-q", "HEAD") is not None
-    no_remote = 0
-    if has_head:
-        no_remote = int((_git(path, "rev-list", "--count", "HEAD", "--not", "--remotes") or "0").strip() or 0)
-    stashes = len(_lines(_git(path, "stash", "list")))
-    wt_lines = _lines(_git(path, "worktree", "list", "--porcelain"))
+    failed = []
+
+    def required(*args, config=()):
+        out = _git(path, *args, config=config)
+        if out is None:
+            failed.append(args[0])
+            return ""
+        return out
+
+    git_dir = _git(path, "rev-parse", "--absolute-git-dir")
+    git_dir = git_dir.rstrip("\n") if git_dir is not None else None
+    expected = _expected_git_dir(path)
+    if git_dir is None:
+        failed.append("rev-parse")
+    elif expected is None or not _same_dir(git_dir, expected):
+        # An empty or broken .git lets git walk up and read the parent repo.
+        return {"path": str(path), "origin": "", "branch": "", "dirty": 0, "no_remote": 0,
+                "stashes": 0, "worktrees": [], "default": None, "stale_merged": [],
+                "error": "git reads this folder through %s; check it by hand" % git_dir}
+    bare = ((path / ".git").is_file()
+            and (_git(path, "rev-parse", "--is-bare-repository") or "").strip() == "true")
+    origin = _redact((_git(path, "config", "--get", "remote.origin.url") or "").strip())
+    head_ref = (_git(path, "symbolic-ref", "-q", "HEAD") or "").strip()
+    branch = head_ref[len("refs/heads/"):] if head_ref.startswith("refs/heads/") else "(detached)"
+    # A bare repo, such as the .bare behind a worktrees-only layout, has no files
+    # to be dirty, and its linked worktrees' rows show the shared stash.
+    # --ignore-submodules=dirty keeps status out of each submodule, whose own
+    # filters it would run; a submodule's changes show in its own row.
+    dirty = 0 if bare else len(_lines(required("status", "--porcelain=v1", "--untracked-files=normal",
+                                               "--ignore-submodules=dirty",
+                                               config=_no_filters(path))))
+    stashes = 0 if bare else len(_lines(required("stash", "list")))
+    wt_lines = _lines(required("worktree", "list", "--porcelain"))
     worktrees = [l[len("worktree "):] for l in wt_lines if l.startswith("worktree ")]
     checked_out = {l[len("branch refs/heads/"):] for l in wt_lines
                    if l.startswith("branch refs/heads/")}
-    default = _default_branch(path)
+    # Linked worktrees share one set of branches. The main worktree counts every
+    # branch, so a pruned or unscanned worktree's commits still show; a linked
+    # worktree counts its own HEAD, unless its main repo is bare and has no row.
+    tips = ["HEAD"] if _git(path, "rev-parse", "--verify", "-q", "HEAD") is not None else []
+    common = (_git(path, "rev-parse", "--path-format=absolute", "--git-common-dir") or "").rstrip("\n")
+    shared_bare = (_git(path, "config", "--bool", "core.bare") or "").strip() == "true"
+    if bare or shared_bare or (git_dir and common and _same_dir(git_dir, common)):
+        tips.append("--branches")
+    no_remote = int(required("rev-list", "--count", *tips, "--not", "--remotes").strip() or 0) if tips else 0
+    default, problem = _default_branch(path)
+    if problem:
+        failed.append("symbolic-ref (%s)" % problem)
     stale = []
     if default:
         base = default.split("/", 1)[1] if "/" in default else default
-        merged = _lines(_git(path, "for-each-ref", "--merged", default,
-                             "--format=%(refname:short)", "refs/heads"))
+        merged = _lines(required("for-each-ref", "--merged", "refs/remotes/" + default,
+                                 "--format=%(refname:lstrip=2)", "refs/heads"))
         stale = [b for b in merged if b not in (branch, base) and b not in checked_out]
     return {
         "path": str(path),
@@ -142,7 +254,7 @@ def repo_report(path):
         "worktrees": worktrees,
         "default": default,
         "stale_merged": stale,
-        "error": error,
+        "error": ("git %s failed; check this repo by hand" % ", ".join(failed)) if failed else None,
     }
 
 
@@ -166,9 +278,11 @@ def normalize_origin(url, base=None):
         if re.match(r"^/[a-zA-Z]:", u):
             u = u[1:]
         return _local_key(u, base)
-    m = re.match(r"^[a-z][a-z0-9+.-]*://(?:[^@/]+@)?([^/:]+(?::\d+)?)/(.*)$", u, re.I)
+    m = re.match(r"^([a-z][a-z0-9+.-]*)://(?:[^/]*@)?([^/:]+)(?::(\d+))?/(.*)$", u, re.I)
     if m:
-        host, rest = m.group(1), m.group(2)
+        scheme, host, port, rest = m.group(1).lower(), m.group(2), m.group(3), m.group(4)
+        if port and DEFAULT_PORTS.get(scheme) != port:
+            host += ":" + port
     else:
         m = re.match(r"^(?:[^@/]+@)?([^/:]+):(.*)$", u)
         if m and not re.match(r"^[a-zA-Z]$", m.group(1)):
@@ -210,39 +324,73 @@ def leftover_folders(home):
     return out
 
 
+def _submodules(path):
+    """Checked-out submodule dirs of path, from the gitlinks in its index.
+    A gitlink that resolves outside path, through a symlink or .., is skipped."""
+    out = _git(path, "ls-files", "--stage", "-z") or ""
+    top = _real(path)
+    subs = [Path(path) / e.split("\t", 1)[1] for e in out.split("\0") if e.startswith("160000 ")]
+    return [d for d in subs if top is not None and _real(d) is not None and top in _real(d).parents
+            and os.path.lexists(os.path.join(str(d), ".git"))]
+
+
 def build_report(roots, home, max_depth=MAX_DEPTH):
-    repos = [repo_report(p) for p in discover(roots, max_depth)]
+    # Status stays out of submodules, so every submodule needs its own row,
+    # including ones too deep or under a skipped folder for discover to find.
+    queue = list(discover(roots, max_depth))
+    seen = {_key(p) for p in queue}
+    repos = []
+    while queue:
+        path = queue.pop(0)
+        repos.append(repo_report(path))
+        for sub in _submodules(path):
+            k = _key(sub)
+            if k not in seen:
+                seen.add(k)
+                queue.append(sub)
+    repos.sort(key=lambda r: r["path"].lower())
     return {"repos": repos, "duplicates": group_duplicates(repos),
             "leftovers": leftover_folders(home)}
+
+
+def _show(value):
+    """value as text, with C0 and C1 control characters written as \\uXXXX
+    the way --json writes them, so a path cannot hide rows on a terminal."""
+    return re.sub(r"[\x00-\x1f\x7f-\x9f]", lambda m: "\\u%04x" % ord(m.group()), str(value))
 
 
 def _text(report):
     rows = ["path | branch | dirty | no remote | stashes | worktrees | default | stale merged | origin"]
     for r in report["repos"]:
-        rows.append(" | ".join(str(x) for x in (
+        rows.append(" | ".join(_show(x) for x in (
             r["path"], r["branch"], r["dirty"], r["no_remote"], r["stashes"],
             len(r["worktrees"]), r["default"] or "-", ",".join(r["stale_merged"]) or "-",
-            r["origin"] or "-")) + ("  ERROR: " + r["error"] if r["error"] else ""))
+            r["origin"] or "-")) + ("  ERROR: " + _show(r["error"]) if r["error"] else ""))
     rows.append("")
     rows.append("Duplicate groups (same origin):")
     for k, paths in report["duplicates"].items():
-        rows.append("  %s: %s" % (k, ", ".join(paths)))
+        rows.append("  %s: %s" % (_show(k), ", ".join(_show(x) for x in paths)))
     rows.append("Leftover folders with no .git:")
     for p in report["leftovers"]:
-        rows.append("  " + p)
+        rows.append("  " + _show(p))
     return "\n".join(rows)
 
 
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--root", action="append", help="dir to scan; repeatable (default: home)")
-    ap.add_argument("--home", default=str(Path.home()), help="where to look for leftover folders")
+    ap.add_argument("--home", help="where to look for leftover folders (default: home)")
     ap.add_argument("--json", action="store_true", help="print JSON instead of a table")
     ap.add_argument("--max-depth", type=int, default=MAX_DEPTH, help="how deep to look for repos")
     args = ap.parse_args(argv)
+    home = args.home or str(Path.home())
+    roots = args.root or [home]
+    for d in roots + ([args.home] if args.home else []):
+        if not os.path.isdir(d):
+            ap.error("not a directory: %s" % d)
     if hasattr(sys.stdout, "reconfigure"):
-        sys.stdout.reconfigure(encoding="utf-8")
-    report = build_report(args.root or [args.home], args.home, args.max_depth)
+        sys.stdout.reconfigure(encoding="utf-8", errors="surrogateescape")
+    report = build_report(roots, home, args.max_depth)
     print(json.dumps(report, indent=2) if args.json else _text(report))
     return 0
 

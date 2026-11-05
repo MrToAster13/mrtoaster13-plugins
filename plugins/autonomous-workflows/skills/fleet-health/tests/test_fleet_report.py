@@ -371,3 +371,642 @@ def test_security_credentials_in_the_origin_url_are_not_reported(tmp_path):
 
     assert "s3cretvalue" not in json.dumps(r)
     assert r["origin"] == "https://github.com/o/r.git"
+
+
+# Regression tests for the ELI-1043 verifier findings on PR #17.
+
+def test_eli1043_f1_partial_clone_is_not_fetched_and_shows_an_error(tmp_path, monkeypatch):
+    seed = tmp_path / "seed"
+    seed.mkdir()
+    git(seed, "init", "-q")
+    commit(seed, "a.txt", "".join("%d\n" % i for i in range(50)))
+    remote = tmp_path / "remote.git"
+    subprocess.run(["git", "clone", "-q", "--bare", str(seed), str(remote)], check=True)
+    git(remote, "config", "uploadpack.allowfilter", "true")
+    home = tmp_path / "home"
+    home.mkdir()
+    repo = home / "pc"
+    monkeypatch.setenv("GIT_NO_LAZY_FETCH", "1")
+    subprocess.run(["git", "clone", "-q", "--no-checkout", "--filter=blob:none",
+                    remote.as_uri(), str(repo)], check=True)
+    git(repo, "read-tree", "HEAD")
+    (repo / "b.txt").write_text("".join("%d\n" % i for i in range(51)))
+    git(repo, "add", "b.txt")
+    git(repo, "rm", "-q", "--cached", "a.txt")
+    monkeypatch.delenv("GIT_NO_LAZY_FETCH")
+    before = tree_digest(repo)
+
+    r = fleet_report.repo_report(repo)
+
+    assert tree_digest(repo) == before
+    assert r["error"]
+
+
+def test_eli1043_f2_a_failing_git_status_is_an_error_not_clean(tmp_path):
+    repo = tmp_path / "badindex"
+    repo.mkdir()
+    git(repo, "init", "-q")
+    commit(repo, "a.txt")
+    (repo / "untracked.txt").write_text("u")
+    (repo / ".git" / "index").write_bytes(b"not an index")
+
+    r = fleet_report.repo_report(repo)
+
+    assert r["error"]
+
+
+def test_eli1043_f2_a_failing_rev_list_is_an_error_not_clean(tmp_path):
+    repo = tmp_path / "noparent"
+    repo.mkdir()
+    git(repo, "init", "-q")
+    commit(repo, "a.txt")
+    first = git(repo, "rev-parse", "HEAD")
+    commit(repo, "b.txt")
+    (repo / ".git" / "objects" / first[:2] / first[2:]).unlink()
+
+    r = fleet_report.repo_report(repo)
+
+    assert r["error"]
+
+
+def test_eli1043_f2_an_empty_git_dir_inside_another_repo_is_an_error(tmp_path):
+    parent = tmp_path / "parent"
+    parent.mkdir()
+    git(parent, "init", "-q")
+    commit(parent, "a.txt")
+    child = parent / "child"
+    (child / ".git").mkdir(parents=True)
+
+    r = fleet_report.repo_report(child)
+
+    assert r["error"]
+
+
+def test_eli1043_f3_a_password_with_a_literal_at_sign_is_not_printed(tmp_path):
+    repo = tmp_path / "cred2"
+    repo.mkdir()
+    git(repo, "init", "-q")
+    git(repo, "remote", "add", "origin", "https://user:p@ss@github.com/o/r.git")
+
+    r = fleet_report.repo_report(repo)
+
+    assert r["origin"] == "https://github.com/o/r.git"
+
+
+def test_eli1043_f4_a_dangling_origin_head_falls_back_to_a_real_default(tmp_path):
+    remote = bare_remote(tmp_path, branch="master")
+    seed = clone(remote, tmp_path / "seed3")
+    git(seed, "switch", "-q", "-c", "main")
+    commit(seed, "main-only.txt")
+    git(seed, "push", "-q", "origin", "main")
+    repo = clone(remote, tmp_path / "home" / "dangle")
+    git(repo, "branch", "merged-old")
+    git(repo, "update-ref", "-d", "refs/remotes/origin/master")
+
+    r = fleet_report.repo_report(repo)
+
+    assert r["default"] == "origin/main"
+    assert "merged-old" in r["stale_merged"]
+
+
+def test_eli1043_f5_local_only_commits_on_another_branch_are_counted(tmp_path):
+    remote = bare_remote(tmp_path)
+    repo = clone(remote, tmp_path / "home" / "side")
+    git(repo, "switch", "-q", "-c", "feature")
+    commit(repo, "only-here.txt")
+    git(repo, "switch", "-q", "master")
+
+    r = fleet_report.repo_report(repo)
+
+    assert r["no_remote"] == 1
+
+
+@pytest.mark.parametrize("a, b", [
+    ("ssh://git@github.com:22/o/r.git", "git@github.com:o/r.git"),
+    ("https://github.com:443/o/r.git", "https://github.com/o/r"),
+])
+def test_eli1043_f6_default_ports_normalize_away(a, b):
+    assert fleet_report.normalize_origin(a) == fleet_report.normalize_origin(b)
+
+
+def test_eli1043_f7_a_missing_root_exits_2(tmp_path):
+    missing = tmp_path / "no-such-dir"
+
+    with pytest.raises(SystemExit) as exc:
+        fleet_report.main(["--root", str(missing), "--home", str(missing)])
+
+    assert exc.value.code == 2
+
+
+# Regression tests for the ELI-1043 adversarial review of the fix.
+
+def test_eli1043_r1_a_folder_name_ending_in_a_space_is_not_a_false_error(tmp_path):
+    repo = tmp_path / "sp "
+    repo.mkdir()
+    git(repo, "init", "-q")
+    commit(repo, "a.txt")
+
+    r = fleet_report.repo_report(repo)
+
+    assert r["error"] is None
+    assert r["no_remote"] == 1
+
+
+def test_eli1043_r2_a_missing_default_home_does_not_block_an_explicit_root(tmp_path, monkeypatch):
+    root = tmp_path / "root"
+    root.mkdir()
+    monkeypatch.setenv("HOME", str(tmp_path / "nonexistent"))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path / "nonexistent"))
+
+    assert fleet_report.main(["--root", str(root)]) == 0
+
+
+@pytest.mark.parametrize("a, b", [
+    ("http://h.com:80/o/r", "http://h.com/o/r"),
+    ("git://h.com:9418/o/r", "git://h.com/o/r"),
+    ("git+ssh://git@h.com:22/o/r", "git@h.com:o/r"),
+])
+def test_eli1043_r4_more_default_ports_normalize_away(a, b):
+    assert fleet_report.normalize_origin(a) == fleet_report.normalize_origin(b)
+
+
+# Regression tests for the ELI-1043 interrogate findings at dbcdbd9.
+
+def test_eli1043_i1_a_pruned_worktree_branch_still_counts_in_the_main_row(tmp_path):
+    remote = bare_remote(tmp_path)
+    repo = clone(remote, tmp_path / "home" / "prune")
+    wt = tmp_path / "home" / "gone-wt"
+    git(repo, "worktree", "add", "-q", str(wt), "-b", "wip")
+    commit(wt, "w.txt")
+    import shutil
+    shutil.rmtree(str(wt))
+
+    assert fleet_report.repo_report(repo)["no_remote"] == 1
+
+
+def test_eli1043_i2_a_worktree_outside_the_scan_root_still_counts_in_the_main_row(tmp_path):
+    remote = bare_remote(tmp_path)
+    repo = clone(remote, tmp_path / "home" / "outside")
+    wt = tmp_path / "elsewhere" / "wt"
+    git(repo, "worktree", "add", "-q", str(wt), "-b", "feat")
+    commit(wt, "f.txt")
+
+    reports = fleet_report.build_report([tmp_path / "home"], tmp_path / "home")["repos"]
+
+    assert [r["no_remote"] for r in reports] == [1]
+
+
+def test_eli1043_i3_main_row_counts_every_branch_and_a_linked_row_its_own_head(tmp_path):
+    remote = bare_remote(tmp_path)
+    repo = clone(remote, tmp_path / "home" / "dbl")
+    commit(repo, "shared.txt")
+    wt = tmp_path / "home" / "dbl-wt"
+    git(repo, "worktree", "add", "-q", str(wt), "-b", "feat")
+    commit(wt, "only-wt.txt")
+
+    assert fleet_report.repo_report(repo)["no_remote"] == 2
+    assert fleet_report.repo_report(wt)["no_remote"] == 2
+
+
+def _bare_layout(tmp_path):
+    remote = bare_remote(tmp_path)
+    proj = tmp_path / "home" / "proj"
+    proj.mkdir(parents=True)
+    subprocess.run(["git", "clone", "-q", "--bare", str(remote), str(proj / ".bare")], check=True)
+    (proj / ".git").write_text("gitdir: ./.bare\n")
+    git(proj, "config", "remote.origin.fetch", "+refs/heads/*:refs/remotes/origin/*")
+    git(proj, "fetch", "-q", "origin")
+    git(proj, "worktree", "add", "-q", str(proj / "master-wt"), "master")
+    return proj
+
+
+def test_eli1043_i4_a_bare_repo_with_worktrees_layout_is_not_a_false_error(tmp_path):
+    proj = _bare_layout(tmp_path)
+
+    r = fleet_report.repo_report(proj)
+
+    assert r["error"] is None
+
+
+def test_eli1043_i4_a_side_branch_in_the_bare_layout_is_counted(tmp_path):
+    proj = _bare_layout(tmp_path)
+    wt = proj / "master-wt"
+    git(wt, "switch", "-q", "-c", "side")
+    commit(wt, "side.txt")
+    git(wt, "switch", "-q", "master")
+
+    assert fleet_report.repo_report(proj)["no_remote"] == 1
+
+
+def test_eli1043_i5_a_dangling_origin_head_with_no_fallback_is_an_error(tmp_path):
+    remote = bare_remote(tmp_path, branch="trunk")
+    repo = clone(remote, tmp_path / "home" / "trunk")
+    git(repo, "branch", "merged-old")
+    git(repo, "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/gone")
+
+    r = fleet_report.repo_report(repo)
+
+    assert r["error"]
+
+
+def test_eli1043_i6_a_password_with_a_slash_is_not_printed(tmp_path):
+    repo = tmp_path / "cred3"
+    repo.mkdir()
+    git(repo, "init", "-q")
+    git(repo, "remote", "add", "origin", "https://user:to/ken@github.com/o/r.git")
+
+    r = fleet_report.repo_report(repo)
+
+    assert "ken" not in r["origin"]
+
+
+def test_eli1043_s1_a_credential_in_a_transport_prefixed_origin_is_not_printed(tmp_path):
+    repo = tmp_path / "cred4"
+    repo.mkdir()
+    git(repo, "init", "-q")
+    git(repo, "remote", "add", "origin", "https::https://user:SECRET2@github.com/o/r.git")
+
+    r = fleet_report.repo_report(repo)
+
+    assert r["origin"] == "https::https://github.com/o/r.git"
+
+
+def test_eli1043_s2_an_inherited_git_dir_does_not_redirect_the_scan(tmp_path, monkeypatch):
+    other = tmp_path / "other"
+    other.mkdir()
+    git(other, "init", "-q")
+    commit(other, "a.txt")
+    (other / "s.txt").write_text("s")
+    git(other, "add", "s.txt")
+    git(other, "stash", "push", "-q")
+    repo = tmp_path / "mine"
+    repo.mkdir()
+    git(repo, "init", "-q")
+    commit(repo, "b.txt")
+    monkeypatch.setenv("GIT_DIR", str(other / ".git"))
+
+    r = fleet_report.repo_report(repo)
+
+    assert r["error"] is None
+    assert r["stashes"] == 0
+    assert r["no_remote"] == 1
+
+
+def test_eli1043_s3_untracked_files_count_even_when_status_hides_them(tmp_path):
+    repo = tmp_path / "hideuntracked"
+    repo.mkdir()
+    git(repo, "init", "-q")
+    commit(repo, "a.txt")
+    git(repo, "config", "status.showUntrackedFiles", "no")
+    (repo / "notes.txt").write_text("only here")
+
+    assert fleet_report.repo_report(repo)["dirty"] == 1
+
+
+# Regression tests for the ELI-1043 interrogate round 2 findings at 4cfbe55.
+
+def test_eli1043_j1_a_local_branch_named_like_the_default_does_not_shadow_it(tmp_path):
+    remote = bare_remote(tmp_path, branch="main")
+    repo = clone(remote, tmp_path / "home" / "amb")
+    commit(repo, "unpushed.txt")
+    git(repo, "branch", "origin/main")
+    git(repo, "branch", "feat")
+
+    r = fleet_report.repo_report(repo)
+
+    assert r["stale_merged"] == []
+
+
+def test_eli1043_j2_a_normal_clone_with_core_bare_true_is_an_error(tmp_path):
+    repo = tmp_path / "corebare"
+    repo.mkdir()
+    git(repo, "init", "-q")
+    commit(repo, "a.txt")
+    (repo / "untracked.txt").write_text("u")
+    git(repo, "config", "core.bare", "true")
+
+    assert fleet_report.repo_report(repo)["error"]
+
+
+@pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="needs mkfifo")
+def test_eli1043_j3_a_fifo_named_git_does_not_hang_the_scan(tmp_path):
+    home = tmp_path / "home"
+    (home / "fifo").mkdir(parents=True)
+    os.mkfifo(str(home / "fifo" / ".git"))
+    out = subprocess.run([sys.executable, str(SKILL / "scripts" / "fleet_report.py"),
+                          "--root", str(home), "--home", str(home), "--json"],
+                         capture_output=True, text=True, timeout=30)
+
+    assert out.returncode == 0, out.stderr
+    assert json.loads(out.stdout)["repos"][0]["error"]
+
+
+def _side_commit(wt):
+    git(wt, "switch", "-q", "-c", "side")
+    commit(wt, "side.txt")
+    git(wt, "switch", "-q", "-")
+
+
+def test_eli1043_k1_a_separate_git_dir_clone_counts_side_branches(tmp_path):
+    remote = bare_remote(tmp_path)
+    repo = tmp_path / "home" / "sep"
+    subprocess.run(["git", "clone", "-q", "--separate-git-dir", str(tmp_path / "sep.git"),
+                    str(remote), str(repo)], check=True)
+    _side_commit(repo)
+
+    assert fleet_report.repo_report(repo)["no_remote"] == 1
+
+
+def test_eli1043_k2_a_submodule_counts_side_branches(tmp_path):
+    remote = bare_remote(tmp_path)
+    sup = tmp_path / "home" / "super"
+    sup.mkdir(parents=True)
+    git(sup, "init", "-q")
+    subprocess.run(["git", "-C", str(sup), "-c", "protocol.file.allow=always", "submodule",
+                    "add", "-q", str(remote), "sub"], check=True)
+    _side_commit(sup / "sub")
+
+    assert fleet_report.repo_report(sup / "sub")["no_remote"] == 1
+
+
+def test_eli1043_k3_a_worktree_of_a_bare_repo_counts_side_branches(tmp_path):
+    remote = bare_remote(tmp_path)
+    proj = tmp_path / "home" / "proj"
+    proj.mkdir(parents=True)
+    bare = proj / "repo.git"
+    subprocess.run(["git", "clone", "-q", "--bare", str(remote), str(bare)], check=True)
+    git(bare, "config", "remote.origin.fetch", "+refs/heads/*:refs/remotes/origin/*")
+    git(bare, "fetch", "-q", "origin")
+    git(bare, "worktree", "add", "-q", str(proj / "main"), "master")
+    _side_commit(proj / "main")
+
+    reports = fleet_report.build_report([proj], proj)["repos"]
+
+    assert sum(r["no_remote"] for r in reports) >= 1
+
+
+@pytest.mark.parametrize("url", [
+    "https://github.com/owner/repo@v2.git",
+    "https://bitbucket.example.com/scm/~alice@corp.com/tools.git",
+])
+def test_eli1043_k4_an_at_sign_in_the_path_is_kept(tmp_path, url):
+    repo = tmp_path / "atpath"
+    repo.mkdir()
+    git(repo, "init", "-q")
+    git(repo, "remote", "add", "origin", url)
+
+    assert fleet_report.repo_report(repo)["origin"] == url
+
+
+# Regression tests for the ELI-1043 interrogate round 3 findings at ac086eb.
+
+def test_eli1043_l1_a_tag_named_like_the_default_branch_is_not_stale(tmp_path):
+    remote = bare_remote(tmp_path)
+    repo = clone(remote, tmp_path / "home" / "tagged")
+    git(repo, "switch", "-q", "-c", "feat")
+    git(repo, "tag", "master")
+
+    assert fleet_report.repo_report(repo)["stale_merged"] == []
+
+
+def test_eli1043_l1_a_tag_named_like_a_worktree_branch_is_not_stale(tmp_path):
+    remote = bare_remote(tmp_path)
+    repo = clone(remote, tmp_path / "home" / "tagged2")
+    git(repo, "worktree", "add", "-q", str(tmp_path / "home" / "wt"), "-b", "side")
+    git(repo, "tag", "side")
+
+    assert fleet_report.repo_report(repo)["stale_merged"] == []
+
+
+def test_eli1043_l2_an_unparsable_port_hides_the_whole_password():
+    assert fleet_report._redact("https://user:to/k@en@github.com/o/r.git") == "https://github.com/o/r.git"
+
+
+def test_eli1043_l1_a_tag_named_like_the_current_branch_keeps_it_out_of_stale(tmp_path):
+    remote = bare_remote(tmp_path)
+    repo = clone(remote, tmp_path / "home" / "tagged3")
+    git(repo, "switch", "-q", "-c", "feat")
+    git(repo, "tag", "feat")
+
+    r = fleet_report.repo_report(repo)
+
+    assert r["branch"] == "feat"
+    assert r["stale_merged"] == []
+
+
+def test_eli1043_m1_status_does_not_run_a_configured_clean_filter(tmp_path):
+    repo = tmp_path / "filtered"
+    repo.mkdir()
+    git(repo, "init", "-q")
+    (repo / ".gitattributes").write_text("*.bin filter=probe\n")
+    (repo / "a.bin").write_text("x\n")
+    git(repo, "add", ".")
+    git(repo, "commit", "-q", "-m", "a")
+    marker = tmp_path / "filter-ran"
+    git(repo, "config", "filter.probe.clean", "touch '%s'; cat" % marker.as_posix())
+    git(repo, "config", "filter.probe.required", "true")
+    os.utime(str(repo / "a.bin"), (1, 1))
+
+    r = fleet_report.repo_report(repo)
+
+    assert not marker.exists()
+    assert r["error"] is None
+
+
+def test_eli1043_m3_an_ipv6_host_with_an_at_sign_in_the_path_is_kept():
+    url = "https://[2001:db8::1]/team-a/tool@v2.git"
+    assert fleet_report._redact(url) == url
+
+
+# Regression tests for the ELI-1043 interrogate round 4 findings at 426cd70.
+
+def _probe_filter(repo, driver, marker):
+    """Commit a.bin under filter=<driver>, then configure that driver to touch marker."""
+    with open(str(repo / ".gitattributes"), "a") as f:
+        f.write("*.bin filter=%s\n" % driver)
+    (repo / "a.bin").write_text("x\n")
+    git(repo, "add", ".")
+    git(repo, "commit", "-q", "-m", "probe")
+    with open(str(repo / ".git" / "config"), "a") as f:
+        f.write('[filter "%s"]\n\tclean = touch \'%s\'; cat\n\trequired = true\n'
+                % (driver, marker.as_posix()))
+    os.utime(str(repo / "a.bin"), (1, 1))
+
+
+def test_eli1043_n1_a_submodule_filter_does_not_run_from_the_parent_row(tmp_path):
+    src = tmp_path / "subsrc"
+    src.mkdir()
+    git(src, "init", "-q")
+    (src / ".gitattributes").write_text("*.bin filter=subprobe\n")
+    (src / "a.bin").write_text("x\n")
+    git(src, "add", ".")
+    git(src, "commit", "-q", "-m", "a")
+    sup = tmp_path / "home" / "super"
+    sup.mkdir(parents=True)
+    git(sup, "init", "-q")
+    commit(sup, "README")
+    git(sup, "-c", "protocol.file.allow=always", "submodule", "add", "-q", str(src), "sub")
+    git(sup, "commit", "-q", "-m", "sub")
+    marker = tmp_path / "sub-filter-ran"
+    git(sup / "sub", "config", "filter.subprobe.clean", "touch '%s'; cat" % marker.as_posix())
+    os.utime(str(sup / "sub" / "a.bin"), (1, 1))
+
+    r = fleet_report.repo_report(sup)
+
+    assert not marker.exists()
+    assert r["error"] is None
+
+
+def test_eli1043_n2_a_driver_name_with_an_equals_sign_is_blanked(tmp_path):
+    repo = tmp_path / "eq"
+    repo.mkdir()
+    git(repo, "init", "-q")
+    commit(repo, "seed.txt")
+    marker = tmp_path / "eq-filter-ran"
+    _probe_filter(repo, "eq=sign", marker)
+
+    r = fleet_report.repo_report(repo)
+
+    assert not marker.exists()
+    assert r["error"] is None
+
+
+# Regression tests for the ELI-1043 interrogate round 5 findings at d0ec8e0.
+
+@pytest.mark.parametrize("subpath", ["a/b/c/d/e/sub", "tmp/lib"])
+def test_eli1043_o1_a_submodule_discovery_misses_still_gets_its_own_row(tmp_path, subpath):
+    remote = bare_remote(tmp_path)
+    root = tmp_path / "root"
+    sup = root / "sup"
+    sup.mkdir(parents=True)
+    git(sup, "init", "-q")
+    commit(sup, "README")
+    git(sup, "-c", "protocol.file.allow=always", "submodule", "add", "-q", str(remote), subpath)
+    git(sup, "commit", "-q", "-m", "sub")
+    (sup / subpath / "README.md").write_text("edited")
+
+    reports = fleet_report.build_report([root], root)["repos"]
+
+    assert {key(r["path"]): r["dirty"] for r in reports}.get(key(sup / subpath)) == 1
+
+
+@pytest.mark.skipif(os.name == "nt", reason="the fake gpg is a shell script")
+def test_eli1043_o2_stash_list_does_not_run_gpg_for_a_signed_stash_entry(tmp_path):
+    repo = tmp_path / "signed"
+    repo.mkdir()
+    git(repo, "init", "-q")
+    commit(repo, "a.txt")
+    tree = git(repo, "rev-parse", "HEAD^{tree}")
+    head = git(repo, "rev-parse", "HEAD")
+    body = ("tree %s\nparent %s\nauthor t <t@example.invalid> 1 +0000\n"
+            "committer t <t@example.invalid> 1 +0000\ngpgsig -----BEGIN PGP SIGNATURE-----\n"
+            " AAAA\n -----END PGP SIGNATURE-----\n\nsigned\n" % (tree, head))
+    signed = subprocess.run(["git", "-C", str(repo), "hash-object", "-t", "commit", "-w", "--stdin"],
+                            input=body, capture_output=True, text=True, check=True).stdout.strip()
+    git(repo, "update-ref", "--create-reflog", "refs/stash", signed)
+    marker = tmp_path / "gpg-ran"
+    fake = tmp_path / "fakegpg"
+    fake.write_text("#!/bin/sh\ntouch '%s'\n" % marker.as_posix())
+    fake.chmod(0o755)
+    git(repo, "config", "log.showSignature", "true")
+    git(repo, "config", "gpg.program", str(fake))
+
+    fleet_report.repo_report(repo)
+
+    assert not marker.exists()
+
+
+# Regression tests for the ELI-1043 interrogate round 6 findings at a9e9594.
+
+@pytest.mark.skipif(os.name == "nt" or sys.platform == "darwin",
+                    reason="needs a filesystem that takes non-UTF-8 names")
+def test_eli1043_p1_a_non_utf8_submodule_path_still_gets_its_row(tmp_path):
+    remote = bare_remote(tmp_path)
+    root = tmp_path / "root"
+    parent = root / "parent"
+    parent.mkdir(parents=True)
+    git(parent, "init", "-q")
+    commit(parent, "README")
+    sub = os.fsdecode(b"node_modules/caf\xe9")
+    subprocess.run(["git", "-C", str(parent), "-c", "protocol.file.allow=always", "submodule",
+                    "add", "-q", str(remote), sub], check=True)
+    git(parent, "commit", "-q", "-m", "sub")
+    (parent / sub / "README.md").write_text("edited")
+
+    reports = fleet_report.build_report([root], root)["repos"]
+
+    assert {key(r["path"]): r["dirty"] for r in reports}.get(key(parent / sub)) == 1
+
+
+@pytest.mark.skipif(os.name == "nt" or sys.platform == "darwin",
+                    reason="needs a filesystem that takes non-UTF-8 names")
+def test_eli1043_p2_table_output_survives_a_non_utf8_repo_path(tmp_path):
+    home = tmp_path / "home"
+    repo = home / os.fsdecode(b"caf\xe9")
+    repo.mkdir(parents=True)
+    git(repo, "init", "-q")
+    out = subprocess.run([sys.executable, str(SKILL / "scripts" / "fleet_report.py"),
+                          "--root", str(home), "--home", str(home)], capture_output=True)
+
+    assert out.returncode == 0, out.stderr
+    assert b"caf\xe9" in out.stdout
+
+
+@pytest.mark.skipif(os.name == "nt", reason="needs symlinks")
+def test_eli1043_p3_a_symlinked_submodule_folder_is_not_followed_outside_its_repo(tmp_path):
+    remote = bare_remote(tmp_path)
+    root = tmp_path / "root"
+    parent = root / "parent"
+    parent.mkdir(parents=True)
+    git(parent, "init", "-q")
+    commit(parent, "README")
+    git(parent, "-c", "protocol.file.allow=always", "submodule", "add", "-q", str(remote), "s1")
+    git(parent, "commit", "-q", "-m", "sub")
+    victim = clone(remote, tmp_path / "outside" / "victim")
+    import shutil
+    shutil.rmtree(str(parent / "s1"))
+    (parent / "s1").symlink_to(victim)
+
+    reports = fleet_report.build_report([root], root)["repos"]
+
+    assert [key(r["path"]) for r in reports] == [key(parent)]
+
+
+# Regression tests for the ELI-1043 interrogate round 7 findings at fbd06c3.
+
+@pytest.mark.skipif(os.name == "nt", reason="needs symlinks")
+def test_eli1043_q1_a_symlink_loop_at_a_gitlink_path_does_not_crash_the_report(tmp_path):
+    remote = bare_remote(tmp_path)
+    root = tmp_path / "root"
+    parent = root / "parent"
+    parent.mkdir(parents=True)
+    git(parent, "init", "-q")
+    commit(parent, "README")
+    git(parent, "-c", "protocol.file.allow=always", "submodule", "add", "-q", str(remote), "s1")
+    git(parent, "commit", "-q", "-m", "sub")
+    import shutil
+    shutil.rmtree(str(parent / "s1"))
+    os.symlink("s1", str(parent / "s1"))
+    other = clone(remote, root / "other")
+    commit(other, "local.txt")
+
+    reports = fleet_report.build_report([root], root)["repos"]
+
+    assert {key(r["path"]): r["no_remote"] for r in reports}.get(key(other)) == 1
+
+
+def test_eli1043_q2_control_characters_are_escaped_in_the_table():
+    report = {"repos": [
+        {"path": "/h/lib\x1b]0;", "branch": "b\x07", "dirty": 0, "no_remote": 0, "stashes": 0,
+         "worktrees": [], "default": None, "stale_merged": ["s\x9b2J"],
+         "origin": "https://h/o\x1b[2J", "error": "e\x1b]8;;"},
+        {"path": "/h/broken", "branch": "(detached)", "dirty": 0, "no_remote": 0, "stashes": 0,
+         "worktrees": [], "default": None, "stale_merged": [], "origin": "",
+         "error": "git status failed; check this repo by hand"},
+    ], "duplicates": {"h/o\x1b": ["/h/a\x1b", "/h/b"]}, "leftovers": ["/h/x-backup-\x1b]0;"]}
+
+    text = fleet_report._text(report)
+
+    assert not any(ord(c) < 0x20 and c != "\n" or 0x7f <= ord(c) <= 0x9f for c in text)
+    assert "/h/lib\\u001b]0;" in text
+    assert "/h/broken" in text and "ERROR: git status failed" in text
