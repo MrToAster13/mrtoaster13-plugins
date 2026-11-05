@@ -28,7 +28,7 @@
     "plugins/autonomous-workflows/skills/batch-run/tests/test_batch_js.py": "cd3a541c7b339a98a6cc407f5fcfa6044a49d08a3fff3f25081429ddc8ebf502",
     "plugins/autonomous-workflows/skills/batch-run/tests/test_cross_copy.py": "604381fd0168fcec566ddce327234f7a9b7e8ad3d171565cdc0f5ae560e2339c",
     "plugins/autonomous-workflows/skills/batch-run/tests/test_estimate.py": "a2ce4288ea093fabe43a19094b5315ea92872d0f4457f563289c8deef74e60de",
-    "plugins/autonomous-workflows/skills/batch-run/tests/test_state.py": "a438d4ee7b5eb62454f8a63f1bb2b223e6131fc4abbf4153130de48387b5d9ef",
+    "plugins/autonomous-workflows/skills/batch-run/tests/test_state.py": "5811f7c0d4ad07f658e29126ffe22363421cd7fdcb875da1fe56e0e02acb0fe5",
     "plugins/autonomous-workflows/skills/batch-run/workflows/batch.js": "a1ddfc6ee4124355b7d5537ddba2e07a99fbf20ea089a38514fed897df81851f",
     "plugins/autonomous-workflows/skills/factory/SKILL.md": "786b187e0c94c80709bf7dae55217981639f69129301c55ccbde2bbf34acd683",
     "plugins/autonomous-workflows/skills/factory/closing.md": "8cfdda11a7bb0aaed34d0b07f71aac1cf97321fa08f64579f9293f4cd8ff47a1",
