@@ -661,3 +661,98 @@ def test_eli1043_s3_untracked_files_count_even_when_status_hides_them(tmp_path):
     (repo / "notes.txt").write_text("only here")
 
     assert fleet_report.repo_report(repo)["dirty"] == 1
+
+
+# Regression tests for the ELI-1043 interrogate round 2 findings at 4cfbe55.
+
+def test_eli1043_j1_a_local_branch_named_like_the_default_does_not_shadow_it(tmp_path):
+    remote = bare_remote(tmp_path, branch="main")
+    repo = clone(remote, tmp_path / "home" / "amb")
+    commit(repo, "unpushed.txt")
+    git(repo, "branch", "origin/main")
+    git(repo, "branch", "feat")
+
+    r = fleet_report.repo_report(repo)
+
+    assert r["stale_merged"] == []
+
+
+def test_eli1043_j2_a_normal_clone_with_core_bare_true_is_an_error(tmp_path):
+    repo = tmp_path / "corebare"
+    repo.mkdir()
+    git(repo, "init", "-q")
+    commit(repo, "a.txt")
+    (repo / "untracked.txt").write_text("u")
+    git(repo, "config", "core.bare", "true")
+
+    assert fleet_report.repo_report(repo)["error"]
+
+
+@pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="needs mkfifo")
+def test_eli1043_j3_a_fifo_named_git_does_not_hang_the_scan(tmp_path):
+    home = tmp_path / "home"
+    (home / "fifo").mkdir(parents=True)
+    os.mkfifo(str(home / "fifo" / ".git"))
+    out = subprocess.run([sys.executable, str(SKILL / "scripts" / "fleet_report.py"),
+                          "--root", str(home), "--home", str(home), "--json"],
+                         capture_output=True, text=True, timeout=30)
+
+    assert out.returncode == 0, out.stderr
+    assert json.loads(out.stdout)["repos"][0]["error"]
+
+
+def _side_commit(wt):
+    git(wt, "switch", "-q", "-c", "side")
+    commit(wt, "side.txt")
+    git(wt, "switch", "-q", "-")
+
+
+def test_eli1043_k1_a_separate_git_dir_clone_counts_side_branches(tmp_path):
+    remote = bare_remote(tmp_path)
+    repo = tmp_path / "home" / "sep"
+    subprocess.run(["git", "clone", "-q", "--separate-git-dir", str(tmp_path / "sep.git"),
+                    str(remote), str(repo)], check=True)
+    _side_commit(repo)
+
+    assert fleet_report.repo_report(repo)["no_remote"] == 1
+
+
+def test_eli1043_k2_a_submodule_counts_side_branches(tmp_path):
+    remote = bare_remote(tmp_path)
+    sup = tmp_path / "home" / "super"
+    sup.mkdir(parents=True)
+    git(sup, "init", "-q")
+    subprocess.run(["git", "-C", str(sup), "-c", "protocol.file.allow=always", "submodule",
+                    "add", "-q", str(remote), "sub"], check=True)
+    _side_commit(sup / "sub")
+
+    assert fleet_report.repo_report(sup / "sub")["no_remote"] == 1
+
+
+def test_eli1043_k3_a_worktree_of_a_bare_repo_counts_side_branches(tmp_path):
+    remote = bare_remote(tmp_path)
+    proj = tmp_path / "home" / "proj"
+    proj.mkdir(parents=True)
+    bare = proj / "repo.git"
+    subprocess.run(["git", "clone", "-q", "--bare", str(remote), str(bare)], check=True)
+    git(bare, "config", "remote.origin.fetch", "+refs/heads/*:refs/remotes/origin/*")
+    git(bare, "fetch", "-q", "origin")
+    git(bare, "worktree", "add", "-q", str(proj / "main"), "master")
+    _side_commit(proj / "main")
+
+    reports = fleet_report.build_report([proj], proj)["repos"]
+
+    assert sum(r["no_remote"] for r in reports) >= 1
+
+
+@pytest.mark.parametrize("url", [
+    "https://github.com/owner/repo@v2.git",
+    "https://bitbucket.example.com/scm/~alice@corp.com/tools.git",
+])
+def test_eli1043_k4_an_at_sign_in_the_path_is_kept(tmp_path, url):
+    repo = tmp_path / "atpath"
+    repo.mkdir()
+    git(repo, "init", "-q")
+    git(repo, "remote", "add", "origin", url)
+
+    assert fleet_report.repo_report(repo)["origin"] == url

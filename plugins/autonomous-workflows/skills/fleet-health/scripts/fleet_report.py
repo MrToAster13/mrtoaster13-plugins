@@ -111,7 +111,8 @@ def _default_branch(path):
     """(default, problem): origin/HEAD's target if that ref exists, else
     origin/main or origin/master. problem is set when origin/HEAD points to a
     missing ref and neither fallback exists."""
-    ref = (_git(path, "symbolic-ref", "--short", "-q", "refs/remotes/origin/HEAD") or "").strip()
+    ref = (_git(path, "symbolic-ref", "-q", "refs/remotes/origin/HEAD") or "").strip()
+    ref = ref[len("refs/remotes/"):] if ref.startswith("refs/remotes/") else ref
     for name in ([ref] if ref else []) + ["origin/main", "origin/master"]:
         if _git(path, "rev-parse", "--verify", "-q", "refs/remotes/" + name) is not None:
             return name, None
@@ -123,13 +124,30 @@ def _expected_git_dir(path):
     dot = path / ".git"
     if dot.is_dir():
         return dot
+    if not dot.is_file():
+        return None
     try:
-        line = dot.read_text(encoding="utf-8", errors="replace").splitlines()[0]
-    except (OSError, IndexError):
+        with open(dot, encoding="utf-8", errors="replace") as f:
+            line = f.readline(4096).rstrip("\r\n")
+    except OSError:
         return None
     if not line.startswith("gitdir:"):
         return None
     return path / line[len("gitdir:"):].strip()
+
+
+def _redact(url):
+    """Drop the user:password@ part of a URL. A raw @ may sit inside the
+    password, and a raw / there shows as a port that is not a number."""
+    m = re.match(r"^((?:[a-z][a-z0-9+.-]*::)?[a-z][a-z0-9+.-]*://)([^/]*)(.*)$", url, re.I)
+    if not m:
+        return url
+    scheme, authority, rest = m.groups()
+    if "@" in authority:
+        return scheme + authority.rsplit("@", 1)[1] + rest
+    if re.match(r"^[^:]*:(?!\d*$)", authority) and "@" in rest:
+        return scheme + rest.split("@", 1)[1]
+    return url
 
 
 def _same_dir(a, b):
@@ -158,10 +176,9 @@ def repo_report(path):
         return {"path": str(path), "origin": "", "branch": "", "dirty": 0, "no_remote": 0,
                 "stashes": 0, "worktrees": [], "default": None, "stale_merged": [],
                 "error": "git reads this folder through %s; check it by hand" % git_dir}
-    bare = (_git(path, "rev-parse", "--is-bare-repository") or "").strip() == "true"
-    origin = (_git(path, "config", "--get", "remote.origin.url") or "").strip()
-    # Never print a user:token@ part of a URL. A raw @ or / may sit inside the password.
-    origin = re.sub(r"^((?:[a-z][a-z0-9+.-]*::)?[a-z][a-z0-9+.-]*://).*@", r"\1", origin, flags=re.I)
+    bare = ((path / ".git").is_file()
+            and (_git(path, "rev-parse", "--is-bare-repository") or "").strip() == "true")
+    origin = _redact((_git(path, "config", "--get", "remote.origin.url") or "").strip())
     branch = (_git(path, "symbolic-ref", "--short", "-q", "HEAD") or "").strip() or "(detached)"
     # A bare repo, such as the .bare behind a worktrees-only layout, has no files
     # to be dirty, and its linked worktrees' rows show the shared stash.
@@ -173,9 +190,11 @@ def repo_report(path):
                    if l.startswith("branch refs/heads/")}
     # Linked worktrees share one set of branches. The main worktree counts every
     # branch, so a pruned or unscanned worktree's commits still show; a linked
-    # worktree counts its own HEAD.
+    # worktree counts its own HEAD, unless its main repo is bare and has no row.
     tips = ["HEAD"] if _git(path, "rev-parse", "--verify", "-q", "HEAD") is not None else []
-    if bare or not worktrees or _same_dir(worktrees[0], path):
+    common = (_git(path, "rev-parse", "--path-format=absolute", "--git-common-dir") or "").rstrip("\n")
+    shared_bare = (_git(path, "config", "--bool", "core.bare") or "").strip() == "true"
+    if bare or shared_bare or (git_dir and common and _same_dir(git_dir, common)):
         tips.append("--branches")
     no_remote = int(required("rev-list", "--count", *tips, "--not", "--remotes").strip() or 0) if tips else 0
     default, problem = _default_branch(path)
@@ -184,7 +203,7 @@ def repo_report(path):
     stale = []
     if default:
         base = default.split("/", 1)[1] if "/" in default else default
-        merged = _lines(required("for-each-ref", "--merged", default,
+        merged = _lines(required("for-each-ref", "--merged", "refs/remotes/" + default,
                                  "--format=%(refname:short)", "refs/heads"))
         stale = [b for b in merged if b not in (branch, base) and b not in checked_out]
     return {
@@ -221,7 +240,7 @@ def normalize_origin(url, base=None):
         if re.match(r"^/[a-zA-Z]:", u):
             u = u[1:]
         return _local_key(u, base)
-    m = re.match(r"^([a-z][a-z0-9+.-]*)://(?:.*@)?([^/:]+)(?::(\d+))?/(.*)$", u, re.I)
+    m = re.match(r"^([a-z][a-z0-9+.-]*)://(?:[^/]*@)?([^/:]+)(?::(\d+))?/(.*)$", u, re.I)
     if m:
         scheme, host, port, rest = m.group(1).lower(), m.group(2), m.group(3), m.group(4)
         if port and DEFAULT_PORTS.get(scheme) != port:

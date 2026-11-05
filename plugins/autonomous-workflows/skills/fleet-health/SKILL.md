@@ -25,7 +25,8 @@ and so is a partial clone whose status would need to fetch a missing object.
 Per repo it gives origin URL, branch, dirty count,
 commits on no remote (`git rev-list --count HEAD --branches --not --remotes`,
 which also catches branches with no upstream; the main worktree's row counts
-every branch, and a linked worktree's row counts only its own `HEAD`), stash
+every branch, and a linked worktree's row counts only its own `HEAD` unless
+its main repo is bare), stash
 count, `git worktree list` entries,
 the repo's own default (`refs/remotes/origin/HEAD`) and branches merged into
 it. It groups directories that share one origin URL and lists `*-backup-*`
