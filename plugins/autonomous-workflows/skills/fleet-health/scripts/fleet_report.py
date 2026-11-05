@@ -146,7 +146,7 @@ def _redact(url):
     if "@" in authority:
         return scheme + authority.rsplit("@", 1)[1] + rest
     if re.match(r"^[^:]*:(?!\d*$)", authority) and "@" in rest:
-        return scheme + rest.split("@", 1)[1]
+        return scheme + rest.rsplit("@", 1)[1]
     return url
 
 
@@ -179,7 +179,8 @@ def repo_report(path):
     bare = ((path / ".git").is_file()
             and (_git(path, "rev-parse", "--is-bare-repository") or "").strip() == "true")
     origin = _redact((_git(path, "config", "--get", "remote.origin.url") or "").strip())
-    branch = (_git(path, "symbolic-ref", "--short", "-q", "HEAD") or "").strip() or "(detached)"
+    head_ref = (_git(path, "symbolic-ref", "-q", "HEAD") or "").strip()
+    branch = head_ref[len("refs/heads/"):] if head_ref.startswith("refs/heads/") else "(detached)"
     # A bare repo, such as the .bare behind a worktrees-only layout, has no files
     # to be dirty, and its linked worktrees' rows show the shared stash.
     dirty = 0 if bare else len(_lines(required("status", "--porcelain=v1", "--untracked-files=normal")))
@@ -204,7 +205,7 @@ def repo_report(path):
     if default:
         base = default.split("/", 1)[1] if "/" in default else default
         merged = _lines(required("for-each-ref", "--merged", "refs/remotes/" + default,
-                                 "--format=%(refname:short)", "refs/heads"))
+                                 "--format=%(refname:lstrip=2)", "refs/heads"))
         stale = [b for b in merged if b not in (branch, base) and b not in checked_out]
     return {
         "path": str(path),

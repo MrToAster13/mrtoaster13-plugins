@@ -756,3 +756,39 @@ def test_eli1043_k4_an_at_sign_in_the_path_is_kept(tmp_path, url):
     git(repo, "remote", "add", "origin", url)
 
     assert fleet_report.repo_report(repo)["origin"] == url
+
+
+# Regression tests for the ELI-1043 interrogate round 3 findings at ac086eb.
+
+def test_eli1043_l1_a_tag_named_like_the_default_branch_is_not_stale(tmp_path):
+    remote = bare_remote(tmp_path)
+    repo = clone(remote, tmp_path / "home" / "tagged")
+    git(repo, "switch", "-q", "-c", "feat")
+    git(repo, "tag", "master")
+
+    assert fleet_report.repo_report(repo)["stale_merged"] == []
+
+
+def test_eli1043_l1_a_tag_named_like_a_worktree_branch_is_not_stale(tmp_path):
+    remote = bare_remote(tmp_path)
+    repo = clone(remote, tmp_path / "home" / "tagged2")
+    git(repo, "worktree", "add", "-q", str(tmp_path / "home" / "wt"), "-b", "side")
+    git(repo, "tag", "side")
+
+    assert fleet_report.repo_report(repo)["stale_merged"] == []
+
+
+def test_eli1043_l2_an_unparsable_port_hides_the_whole_password():
+    assert fleet_report._redact("https://user:to/k@en@github.com/o/r.git") == "https://github.com/o/r.git"
+
+
+def test_eli1043_l1_a_tag_named_like_the_current_branch_keeps_it_out_of_stale(tmp_path):
+    remote = bare_remote(tmp_path)
+    repo = clone(remote, tmp_path / "home" / "tagged3")
+    git(repo, "switch", "-q", "-c", "feat")
+    git(repo, "tag", "feat")
+
+    r = fleet_report.repo_report(repo)
+
+    assert r["branch"] == "feat"
+    assert r["stale_merged"] == []
