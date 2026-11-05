@@ -12,7 +12,9 @@ folders directly under home that have no `.git`.
 
 Read-only: no fetch, no push, no ref, branch, file or config change. Every
 git call runs with --no-optional-locks so `git status` does not rewrite the
-index. Standard library only. Exit 0 on success, 2 on bad arguments.
+index, and with GIT_NO_LAZY_FETCH=1 so a partial clone does not fetch missing
+objects. Standard library only. Exit 0 on success, 2 on bad arguments or a
+--root or --home that is not a directory.
 """
 
 from __future__ import annotations
@@ -37,7 +39,8 @@ def _git(path, *args):
 
     core.fsmonitor=false stops `git status` from starting a watcher daemon.
     """
-    env = dict(os.environ, GIT_OPTIONAL_LOCKS="0", GIT_TERMINAL_PROMPT="0")
+    env = dict(os.environ, GIT_OPTIONAL_LOCKS="0", GIT_TERMINAL_PROMPT="0",
+               GIT_NO_LAZY_FETCH="1")
     try:
         out = subprocess.run(["git", "--no-optional-locks", "-c", "core.fsmonitor=false",
                               "-C", str(path)] + list(args),
@@ -96,32 +99,48 @@ def _lines(text):
 
 
 def _default_branch(path):
-    ref = _git(path, "symbolic-ref", "--short", "-q", "refs/remotes/origin/HEAD")
-    if ref and ref.strip():
-        return ref.strip()
-    for name in ("origin/main", "origin/master"):
+    """origin/HEAD's target if that ref exists, else origin/main or origin/master."""
+    ref = (_git(path, "symbolic-ref", "--short", "-q", "refs/remotes/origin/HEAD") or "").strip()
+    for name in ([ref] if ref else []) + ["origin/main", "origin/master"]:
         if _git(path, "rev-parse", "--verify", "-q", "refs/remotes/" + name) is not None:
             return name
     return None
 
 
+def _same_dir(a, b):
+    return os.path.normcase(str(Path(a).resolve())) == os.path.normcase(str(Path(b).resolve()))
+
+
 def repo_report(path):
     """One repo's state, read without changing anything."""
     path = Path(path)
-    error = None
-    if _git(path, "rev-parse", "--git-dir") is None:
-        error = "git cannot read this repo; check it by hand"
+    failed = []
+
+    def required(*args):
+        out = _git(path, *args)
+        if out is None:
+            failed.append(args[0])
+            return ""
+        return out
+
+    top = _git(path, "rev-parse", "--show-toplevel")
+    if top is None:
+        failed.append("rev-parse")
+    elif not _same_dir(top.strip(), path):
+        # An empty or broken .git lets git walk up and read the parent repo.
+        return {"path": str(path), "origin": "", "branch": "", "dirty": 0, "no_remote": 0,
+                "stashes": 0, "worktrees": [], "default": None, "stale_merged": [],
+                "error": "git reads this folder as part of %s; check it by hand" % top.strip()}
     origin = (_git(path, "config", "--get", "remote.origin.url") or "").strip()
-    # Never print a user:token@ part of a URL.
-    origin = re.sub(r"^([a-z][a-z0-9+.-]*://)[^@/]*@", r"\1", origin, flags=re.I)
+    # Never print a user:token@ part of a URL. A raw @ may sit inside the password.
+    origin = re.sub(r"^([a-z][a-z0-9+.-]*://)[^/]*@", r"\1", origin, flags=re.I)
     branch = (_git(path, "symbolic-ref", "--short", "-q", "HEAD") or "").strip() or "(detached)"
-    dirty = len(_lines(_git(path, "status", "--porcelain=v1")))
+    dirty = len(_lines(required("status", "--porcelain=v1")))
     has_head = _git(path, "rev-parse", "--verify", "-q", "HEAD") is not None
-    no_remote = 0
-    if has_head:
-        no_remote = int((_git(path, "rev-list", "--count", "HEAD", "--not", "--remotes") or "0").strip() or 0)
-    stashes = len(_lines(_git(path, "stash", "list")))
-    wt_lines = _lines(_git(path, "worktree", "list", "--porcelain"))
+    tips = ["HEAD", "--branches"] if has_head else ["--branches"]
+    no_remote = int(required("rev-list", "--count", *tips, "--not", "--remotes").strip() or 0)
+    stashes = len(_lines(required("stash", "list")))
+    wt_lines = _lines(required("worktree", "list", "--porcelain"))
     worktrees = [l[len("worktree "):] for l in wt_lines if l.startswith("worktree ")]
     checked_out = {l[len("branch refs/heads/"):] for l in wt_lines
                    if l.startswith("branch refs/heads/")}
@@ -129,8 +148,8 @@ def repo_report(path):
     stale = []
     if default:
         base = default.split("/", 1)[1] if "/" in default else default
-        merged = _lines(_git(path, "for-each-ref", "--merged", default,
-                             "--format=%(refname:short)", "refs/heads"))
+        merged = _lines(required("for-each-ref", "--merged", default,
+                                 "--format=%(refname:short)", "refs/heads"))
         stale = [b for b in merged if b not in (branch, base) and b not in checked_out]
     return {
         "path": str(path),
@@ -142,7 +161,7 @@ def repo_report(path):
         "worktrees": worktrees,
         "default": default,
         "stale_merged": stale,
-        "error": error,
+        "error": ("git %s failed; check this repo by hand" % ", ".join(failed)) if failed else None,
     }
 
 
@@ -166,9 +185,11 @@ def normalize_origin(url, base=None):
         if re.match(r"^/[a-zA-Z]:", u):
             u = u[1:]
         return _local_key(u, base)
-    m = re.match(r"^[a-z][a-z0-9+.-]*://(?:[^@/]+@)?([^/:]+(?::\d+)?)/(.*)$", u, re.I)
+    m = re.match(r"^([a-z][a-z0-9+.-]*)://(?:[^/]*@)?([^/:]+)(?::(\d+))?/(.*)$", u, re.I)
     if m:
-        host, rest = m.group(1), m.group(2)
+        scheme, host, port, rest = m.group(1).lower(), m.group(2), m.group(3), m.group(4)
+        if port and (scheme, port) not in (("ssh", "22"), ("https", "443")):
+            host += ":" + port
     else:
         m = re.match(r"^(?:[^@/]+@)?([^/:]+):(.*)$", u)
         if m and not re.match(r"^[a-zA-Z]$", m.group(1)):
@@ -240,6 +261,9 @@ def main(argv=None):
     ap.add_argument("--json", action="store_true", help="print JSON instead of a table")
     ap.add_argument("--max-depth", type=int, default=MAX_DEPTH, help="how deep to look for repos")
     args = ap.parse_args(argv)
+    for d in (args.root or []) + [args.home]:
+        if not os.path.isdir(d):
+            ap.error("not a directory: %s" % d)
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8")
     report = build_report(args.root or [args.home], args.home, args.max_depth)

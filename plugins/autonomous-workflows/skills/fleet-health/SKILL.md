@@ -20,9 +20,11 @@ python <skill-dir>/scripts/fleet_report.py --json     # same data as JSON
 
 `--root PATH` (repeatable) narrows the scan, `--max-depth N` (default 6)
 sets how deep it looks, and `--home PATH` sets where to look for leftover
-folders. A repo git cannot read is flagged with an error, not shown as clean. Per repo it gives origin URL, branch, dirty count,
-commits on no remote (`git rev-list --count HEAD --not --remotes`, which also
-catches branches with no upstream), stash count, `git worktree list` entries,
+folders. A repo git cannot read is flagged with an error, not shown as clean,
+and so is a partial clone whose status would need to fetch a missing object.
+Per repo it gives origin URL, branch, dirty count,
+commits on no remote (`git rev-list --count HEAD --branches --not --remotes`,
+which also catches branches with no upstream), stash count, `git worktree list` entries,
 the repo's own default (`refs/remotes/origin/HEAD`) and branches merged into
 it. It groups directories that share one origin URL and lists `*-backup-*`
 and `*-test-run*` folders under home with no `.git`. Stop after the report.
@@ -83,7 +85,9 @@ Collect per repo:
 - **behind**: `[behind N]` in the track field
 - **stale merged**: `git -C $r branch --merged $d`, where `$d` is the repo's
   own default from `git -C $r symbolic-ref --short refs/remotes/origin/HEAD`
-  (not always `origin/main`), minus the current branch and the default itself
+  (not always `origin/main`), minus the current branch and the default itself.
+  If `git -C $r rev-parse --verify -q refs/remotes/$d` fails, `origin/HEAD` is
+  dangling: use `origin/main` or `origin/master`, whichever exists
 - **gone upstream**: track field contains `gone`
 
 ## Stage 3: secret and SSH-log scan
