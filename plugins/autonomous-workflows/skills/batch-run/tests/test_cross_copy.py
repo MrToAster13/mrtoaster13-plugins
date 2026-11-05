@@ -1,11 +1,12 @@
 """batch-run ships in two repos: claude-config/skills/batch-run and
 mrtoaster13-plugins/plugins/autonomous-workflows/skills/batch-run. A batch
 started under one copy must resume under the other, so both must put a unit's
-record in the same file. This file is identical in both repos.
+record in the same file. The plugin copy is generated from claude-config by
+bin/sync-shared-skills.py (ELI-781), so edit only the claude-config one.
 
-tests/fixtures/foreign-checkpoint holds a checkpoint directory that the other
-copy wrote. Regenerate it with the other copy's state.py if record names
-change on purpose, and change both copies together.
+tests/fixtures/foreign-checkpoint holds a checkpoint directory written by the
+plugin copy before the two were merged. It keeps records from installs made
+before the merge readable. Do not regenerate it from the current state.py.
 """
 
 from __future__ import annotations

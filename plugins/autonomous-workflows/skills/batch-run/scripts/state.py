@@ -745,8 +745,12 @@ def _main(argv=None):
         print(json.dumps(failure_counts(args.dir, units), indent=2))
         return 0
     if args.command == "record":
-        print(json.dumps(record(args.dir, args.id, args.status, args.artifact,
-                                args.reason, args.worker), indent=2))
+        try:
+            written = record(args.dir, args.id, args.status, args.artifact, args.reason, args.worker)
+        except OSError as exc:
+            print("error: {}".format(exc), file=sys.stderr)
+            return 1
+        print(json.dumps(written, indent=2))
         return 0
     if args.command == "report":
         summary = report(args.dir, units)

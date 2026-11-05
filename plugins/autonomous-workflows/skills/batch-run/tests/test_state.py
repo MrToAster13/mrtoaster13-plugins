@@ -1323,3 +1323,26 @@ def test_release_with_an_owner_keeps_a_lock_nested_too_deeply_to_parse(batch):
     path.write_text("[" * 100000 + "]" * 100000, encoding="utf-8")
     assert state.release(cdir, "unit-31", "run-a") is False
     assert path.exists()
+
+
+def test_the_record_cli_reports_an_unreadable_prior_as_an_error_line(batch, monkeypatch, capsys):
+    _, _, cdir = batch
+    _reject(cdir, "unit-14", 1)
+    path = state.record_path(cdir, "unit-14")
+    before = path.read_text(encoding="utf-8")
+    real_read = state._read_json
+
+    def busy(target):
+        if str(target) == str(path):
+            raise PermissionError(13, "in use", str(target))
+        return real_read(target)
+
+    monkeypatch.setattr(state, "_read_json", busy)
+    rc = state._main(["record", "--dir", str(cdir), "--id", "unit-14", "--status", "written",
+                      "--artifact", "out.md"])
+    err = capsys.readouterr().err
+    assert rc == 1
+    assert err.startswith("error: ")
+    assert "Traceback" not in err
+    monkeypatch.undo()
+    assert path.read_text(encoding="utf-8") == before
