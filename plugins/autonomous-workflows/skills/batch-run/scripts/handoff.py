@@ -141,7 +141,12 @@ def _main(argv=None):
     resume_command = args.resume_command or "/batch-run {} --spec {} --resume".format(
         args.units, args.spec)
 
-    units = state.load_units(args.units)
+    try:
+        units = state.load_units(args.units)
+    except (OSError, ValueError) as exc:
+        # A units file that is missing or does not parse: say so, no traceback.
+        print("error: {}".format(exc), file=sys.stderr)
+        return 1
     summary = state.report(args.dir, units)
 
     handoff_dir = find_root(args.root) / "docs" / "handoffs"

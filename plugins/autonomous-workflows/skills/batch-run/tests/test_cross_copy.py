@@ -1,11 +1,12 @@
 """batch-run ships in two repos: claude-config/skills/batch-run and
 mrtoaster13-plugins/plugins/autonomous-workflows/skills/batch-run. A batch
 started under one copy must resume under the other, so both must put a unit's
-record in the same file. This file is identical in both repos.
+record in the same file. The plugin copy is generated from claude-config by
+bin/sync-shared-skills.py (ELI-781), so edit only the claude-config one.
 
-tests/fixtures/foreign-checkpoint holds a checkpoint directory that the other
-copy wrote. Regenerate it with the other copy's state.py if record names
-change on purpose, and change both copies together.
+tests/fixtures/foreign-checkpoint holds a checkpoint directory written by the
+plugin copy before the two were merged. It keeps records from installs made
+before the merge readable. Do not regenerate it from the current state.py.
 """
 
 from __future__ import annotations
@@ -52,6 +53,39 @@ def test_a_batch_written_by_the_other_copy_resumes_here(tmp_path):
     assert pending == ["Unit-03", "Batch-Config"]
     for unit_id in FOREIGN_VERIFIED:
         assert state.read_record(str(cdir), unit_id)["status"] == "verified"
+
+
+FOREIGN_CONFIGS = HERE / "fixtures" / "foreign-config"
+
+
+def _load_foreign_config(tmp_path, name):
+    # load_config may write the corrected record back, so load a copy.
+    import estimate
+
+    cdir = tmp_path / "checkpoint"
+    shutil.copytree(str(FOREIGN_CONFIGS / name), str(cdir))
+    return estimate.load_config(str(cdir))
+
+
+def test_a_plugin_haiku_both_config_resumes_on_an_opus_verifier(tmp_path):
+    # The plugin's pre-merge menu had haiku-both, a Haiku verifier.
+    config = _load_foreign_config(tmp_path, "plugin-haiku-both")
+    assert config["choice"] == "haiku-write-opus-verify"
+    assert config["worker"] == {"model": "haiku"}
+    assert config["verifier"] == {"model": "opus"}
+    assert config["remapped"] == [
+        "verifier: haiku -> opus",
+        "choice: haiku-both -> haiku-write-opus-verify",
+    ]
+
+
+def test_a_claude_config_opus_low_effort_config_resumes_unchanged(tmp_path):
+    config = _load_foreign_config(tmp_path, "claude-config-opus-low-effort")
+    assert config == {
+        "choice": "opus-low-effort",
+        "worker": {"model": "opus", "effort": "low"},
+        "verifier": {"model": "opus", "effort": "low"},
+    }
 
 
 def test_the_foreign_fixture_holds_one_file_per_recorded_unit():
