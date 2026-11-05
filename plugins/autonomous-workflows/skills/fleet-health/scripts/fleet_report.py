@@ -34,6 +34,13 @@ SKIP_DIRS = {"appdata", "temp", "tmp", ".cache", "node_modules", ".venv", "venv"
              "__pycache__", "$recycle.bin"}
 LEFTOVER_PATTERNS = ("*-backup-*", "*-test-run*")
 MAX_DEPTH = 6
+# `git rev-parse --local-env-vars`: an inherited GIT_DIR or GIT_INDEX_FILE, as in
+# a hook, would point every call at one repo.
+GIT_LOCAL_ENV = ("GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_CONFIG", "GIT_CONFIG_PARAMETERS",
+                 "GIT_CONFIG_COUNT", "GIT_OBJECT_DIRECTORY", "GIT_DIR", "GIT_WORK_TREE",
+                 "GIT_IMPLICIT_WORK_TREE", "GIT_GRAFT_FILE", "GIT_INDEX_FILE",
+                 "GIT_NO_REPLACE_OBJECTS", "GIT_REPLACE_REF_BASE", "GIT_PREFIX",
+                 "GIT_SHALLOW_FILE", "GIT_COMMON_DIR")
 
 
 def _git(path, *args):
@@ -41,8 +48,8 @@ def _git(path, *args):
 
     core.fsmonitor=false stops `git status` from starting a watcher daemon.
     """
-    env = dict(os.environ, GIT_OPTIONAL_LOCKS="0", GIT_TERMINAL_PROMPT="0",
-               GIT_NO_LAZY_FETCH="1")
+    env = {k: v for k, v in os.environ.items() if k not in GIT_LOCAL_ENV}
+    env.update(GIT_OPTIONAL_LOCKS="0", GIT_TERMINAL_PROMPT="0", GIT_NO_LAZY_FETCH="1")
     try:
         out = subprocess.run(["git", "--no-optional-locks", "-c", "core.fsmonitor=false",
                               "-C", str(path)] + list(args),
@@ -101,12 +108,28 @@ def _lines(text):
 
 
 def _default_branch(path):
-    """origin/HEAD's target if that ref exists, else origin/main or origin/master."""
+    """(default, problem): origin/HEAD's target if that ref exists, else
+    origin/main or origin/master. problem is set when origin/HEAD points to a
+    missing ref and neither fallback exists."""
     ref = (_git(path, "symbolic-ref", "--short", "-q", "refs/remotes/origin/HEAD") or "").strip()
     for name in ([ref] if ref else []) + ["origin/main", "origin/master"]:
         if _git(path, "rev-parse", "--verify", "-q", "refs/remotes/" + name) is not None:
-            return name
-    return None
+            return name, None
+    return None, ("origin/HEAD points to missing %s" % ref) if ref else None
+
+
+def _expected_git_dir(path):
+    """The git dir that path's own .git names: the dir itself, or a gitdir: file's target."""
+    dot = path / ".git"
+    if dot.is_dir():
+        return dot
+    try:
+        line = dot.read_text(encoding="utf-8", errors="replace").splitlines()[0]
+    except (OSError, IndexError):
+        return None
+    if not line.startswith("gitdir:"):
+        return None
+    return path / line[len("gitdir:"):].strip()
 
 
 def _same_dir(a, b):
@@ -125,32 +148,39 @@ def repo_report(path):
             return ""
         return out
 
-    top = _git(path, "rev-parse", "--show-toplevel")
-    top = top.rstrip("\n") if top is not None else None
-    if top is None:
+    git_dir = _git(path, "rev-parse", "--absolute-git-dir")
+    git_dir = git_dir.rstrip("\n") if git_dir is not None else None
+    expected = _expected_git_dir(path)
+    if git_dir is None:
         failed.append("rev-parse")
-    elif not _same_dir(top, path):
+    elif expected is None or not _same_dir(git_dir, expected):
         # An empty or broken .git lets git walk up and read the parent repo.
         return {"path": str(path), "origin": "", "branch": "", "dirty": 0, "no_remote": 0,
                 "stashes": 0, "worktrees": [], "default": None, "stale_merged": [],
-                "error": "git reads this folder as part of %s; check it by hand" % top}
+                "error": "git reads this folder through %s; check it by hand" % git_dir}
+    bare = (_git(path, "rev-parse", "--is-bare-repository") or "").strip() == "true"
     origin = (_git(path, "config", "--get", "remote.origin.url") or "").strip()
-    # Never print a user:token@ part of a URL. A raw @ may sit inside the password.
-    origin = re.sub(r"^([a-z][a-z0-9+.-]*://)[^/]*@", r"\1", origin, flags=re.I)
+    # Never print a user:token@ part of a URL. A raw @ or / may sit inside the password.
+    origin = re.sub(r"^((?:[a-z][a-z0-9+.-]*::)?[a-z][a-z0-9+.-]*://).*@", r"\1", origin, flags=re.I)
     branch = (_git(path, "symbolic-ref", "--short", "-q", "HEAD") or "").strip() or "(detached)"
-    dirty = len(_lines(required("status", "--porcelain=v1")))
-    stashes = len(_lines(required("stash", "list")))
+    # A bare repo, such as the .bare behind a worktrees-only layout, has no files
+    # to be dirty, and its linked worktrees' rows show the shared stash.
+    dirty = 0 if bare else len(_lines(required("status", "--porcelain=v1", "--untracked-files=normal")))
+    stashes = 0 if bare else len(_lines(required("stash", "list")))
     wt_lines = _lines(required("worktree", "list", "--porcelain"))
     worktrees = [l[len("worktree "):] for l in wt_lines if l.startswith("worktree ")]
     checked_out = {l[len("branch refs/heads/"):] for l in wt_lines
                    if l.startswith("branch refs/heads/")}
-    # Linked worktrees share one set of branches. The main worktree counts the
-    # branches no linked worktree has checked out, and each linked one its HEAD.
+    # Linked worktrees share one set of branches. The main worktree counts every
+    # branch, so a pruned or unscanned worktree's commits still show; a linked
+    # worktree counts its own HEAD.
     tips = ["HEAD"] if _git(path, "rev-parse", "--verify", "-q", "HEAD") is not None else []
-    if not worktrees or _same_dir(worktrees[0], path):
-        tips += ["--exclude=" + b for b in sorted(checked_out - {branch})] + ["--branches"]
+    if bare or not worktrees or _same_dir(worktrees[0], path):
+        tips.append("--branches")
     no_remote = int(required("rev-list", "--count", *tips, "--not", "--remotes").strip() or 0) if tips else 0
-    default = _default_branch(path)
+    default, problem = _default_branch(path)
+    if problem:
+        failed.append("symbolic-ref (%s)" % problem)
     stale = []
     if default:
         base = default.split("/", 1)[1] if "/" in default else default
@@ -191,7 +221,7 @@ def normalize_origin(url, base=None):
         if re.match(r"^/[a-zA-Z]:", u):
             u = u[1:]
         return _local_key(u, base)
-    m = re.match(r"^([a-z][a-z0-9+.-]*)://(?:[^/]*@)?([^/:]+)(?::(\d+))?/(.*)$", u, re.I)
+    m = re.match(r"^([a-z][a-z0-9+.-]*)://(?:.*@)?([^/:]+)(?::(\d+))?/(.*)$", u, re.I)
     if m:
         scheme, host, port, rest = m.group(1).lower(), m.group(2), m.group(3), m.group(4)
         if port and DEFAULT_PORTS.get(scheme) != port:

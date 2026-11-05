@@ -24,8 +24,9 @@ folders. A repo git cannot read is flagged with an error, not shown as clean,
 and so is a partial clone whose status would need to fetch a missing object.
 Per repo it gives origin URL, branch, dirty count,
 commits on no remote (`git rev-list --count HEAD --branches --not --remotes`,
-which also catches branches with no upstream; a branch checked out in a linked
-worktree counts in that worktree's row only), stash count, `git worktree list` entries,
+which also catches branches with no upstream; the main worktree's row counts
+every branch, and a linked worktree's row counts only its own `HEAD`), stash
+count, `git worktree list` entries,
 the repo's own default (`refs/remotes/origin/HEAD`) and branches merged into
 it. It groups directories that share one origin URL and lists `*-backup-*`
 and `*-test-run*` folders under home with no `.git`. Stop after the report.
