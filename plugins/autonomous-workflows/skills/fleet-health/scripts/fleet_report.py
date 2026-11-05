@@ -63,7 +63,7 @@ def _git(path, *args, config=()):
         out = subprocess.run(["git", "--no-optional-locks", "-c", "core.fsmonitor=false",
                               "-c", "log.showSignature=false", "-C", str(path)] + list(args),
                              capture_output=True, text=True, encoding="utf-8",
-                             errors="replace", timeout=60, env=env)
+                             errors="surrogateescape", timeout=60, env=env)
     except (OSError, subprocess.SubprocessError):
         return None
     if out.returncode != 0:
@@ -136,7 +136,7 @@ def _expected_git_dir(path):
     if not dot.is_file():
         return None
     try:
-        with open(dot, encoding="utf-8", errors="replace") as f:
+        with open(dot, encoding="utf-8", errors="surrogateescape") as f:
             line = f.readline(4096).rstrip("\r\n")
     except OSError:
         return None
@@ -312,10 +312,13 @@ def leftover_folders(home):
 
 
 def _submodules(path):
-    """Checked-out submodule dirs of path, from the gitlinks in its index."""
+    """Checked-out submodule dirs of path, from the gitlinks in its index.
+    A gitlink that resolves outside path, through a symlink or .., is skipped."""
     out = _git(path, "ls-files", "--stage", "-z") or ""
+    top = Path(path).resolve()
     subs = [Path(path) / e.split("\t", 1)[1] for e in out.split("\0") if e.startswith("160000 ")]
-    return [d for d in subs if os.path.lexists(os.path.join(str(d), ".git"))]
+    return [d for d in subs if top in d.resolve().parents
+            and os.path.lexists(os.path.join(str(d), ".git"))]
 
 
 def build_report(roots, home, max_depth=MAX_DEPTH):
@@ -367,7 +370,7 @@ def main(argv=None):
         if not os.path.isdir(d):
             ap.error("not a directory: %s" % d)
     if hasattr(sys.stdout, "reconfigure"):
-        sys.stdout.reconfigure(encoding="utf-8")
+        sys.stdout.reconfigure(encoding="utf-8", errors="surrogateescape")
     report = build_report(roots, home, args.max_depth)
     print(json.dumps(report, indent=2) if args.json else _text(report))
     return 0

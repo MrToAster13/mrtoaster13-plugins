@@ -10,8 +10,8 @@
     ".github/check-shared-skills.py": "5a4296fe471ea68e7f60b95d8131f31d9905e38e1a11193ab884690406ac85bc",
     ".github/workflows/shared-skills.yml": "ca1c3eb9f39f83da74dc2b6272b7c15578b9201918838795cb55b2d513ef876c",
     "plugins/autonomous-workflows/skills/fleet-health/SKILL.md": "9b34173d90460963a250d2e06d7dd580424e657b4c1c58059e2143725cf2b3a9",
-    "plugins/autonomous-workflows/skills/fleet-health/scripts/fleet_report.py": "f0ca41d9635c8435f842322e5e3a7fc79d4bd518667c28a1bdf2fdd2bb93a20c",
-    "plugins/autonomous-workflows/skills/fleet-health/tests/test_fleet_report.py": "d5a002cafc7e09a9bef1d703f2c20d91af16509de7797a91d67e91b4efb53e97"
+    "plugins/autonomous-workflows/skills/fleet-health/scripts/fleet_report.py": "903e30fbcd94c5c8dcd4988e554cac8548d273c340deb43684c209452fdd2edd",
+    "plugins/autonomous-workflows/skills/fleet-health/tests/test_fleet_report.py": "a89b24078be1c847c1fc3e56e0c2e0c43a3c03c381ff470b535a0d3f4454655d"
   },
   "note": "Written by claude-config bin/sync-shared-skills.py. Edit the skills in claude-config, not here."
 }

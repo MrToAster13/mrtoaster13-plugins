@@ -914,3 +914,59 @@ def test_eli1043_o2_stash_list_does_not_run_gpg_for_a_signed_stash_entry(tmp_pat
     fleet_report.repo_report(repo)
 
     assert not marker.exists()
+
+
+# Regression tests for the ELI-1043 interrogate round 6 findings at a9e9594.
+
+@pytest.mark.skipif(os.name == "nt" or sys.platform == "darwin",
+                    reason="needs a filesystem that takes non-UTF-8 names")
+def test_eli1043_p1_a_non_utf8_submodule_path_still_gets_its_row(tmp_path):
+    remote = bare_remote(tmp_path)
+    root = tmp_path / "root"
+    parent = root / "parent"
+    parent.mkdir(parents=True)
+    git(parent, "init", "-q")
+    commit(parent, "README")
+    sub = os.fsdecode(b"node_modules/caf\xe9")
+    subprocess.run(["git", "-C", str(parent), "-c", "protocol.file.allow=always", "submodule",
+                    "add", "-q", str(remote), sub], check=True)
+    git(parent, "commit", "-q", "-m", "sub")
+    (parent / sub / "README.md").write_text("edited")
+
+    reports = fleet_report.build_report([root], root)["repos"]
+
+    assert {key(r["path"]): r["dirty"] for r in reports}.get(key(parent / sub)) == 1
+
+
+@pytest.mark.skipif(os.name == "nt" or sys.platform == "darwin",
+                    reason="needs a filesystem that takes non-UTF-8 names")
+def test_eli1043_p2_table_output_survives_a_non_utf8_repo_path(tmp_path):
+    home = tmp_path / "home"
+    repo = home / os.fsdecode(b"caf\xe9")
+    repo.mkdir(parents=True)
+    git(repo, "init", "-q")
+    out = subprocess.run([sys.executable, str(SKILL / "scripts" / "fleet_report.py"),
+                          "--root", str(home), "--home", str(home)], capture_output=True)
+
+    assert out.returncode == 0, out.stderr
+    assert b"caf\xe9" in out.stdout
+
+
+@pytest.mark.skipif(os.name == "nt", reason="needs symlinks")
+def test_eli1043_p3_a_symlinked_submodule_folder_is_not_followed_outside_its_repo(tmp_path):
+    remote = bare_remote(tmp_path)
+    root = tmp_path / "root"
+    parent = root / "parent"
+    parent.mkdir(parents=True)
+    git(parent, "init", "-q")
+    commit(parent, "README")
+    git(parent, "-c", "protocol.file.allow=always", "submodule", "add", "-q", str(remote), "s1")
+    git(parent, "commit", "-q", "-m", "sub")
+    victim = clone(remote, tmp_path / "outside" / "victim")
+    import shutil
+    shutil.rmtree(str(parent / "s1"))
+    (parent / "s1").symlink_to(victim)
+
+    reports = fleet_report.build_report([root], root)["repos"]
+
+    assert [key(r["path"]) for r in reports] == [key(parent)]
