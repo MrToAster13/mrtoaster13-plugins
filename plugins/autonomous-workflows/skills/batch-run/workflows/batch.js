@@ -30,6 +30,7 @@ const {
   checkpointDir = 'checkpoint',
   statePath = 'state.py',
   maxAttempts = 2,
+  priorFailures = {},
   models = null,
 } = args || {}
 
@@ -59,6 +60,22 @@ const refusal = () => {
   }
   return null
 }
+
+// priorFailures is `state.py failures` output: {id: {failures, reason}}. A
+// unit the verifier rejected in an earlier run continues from that count, so
+// maxAttempts caps rejections across every run, not per run. A count that is
+// not a whole number of zero or more reads as 0, as state.py reads it.
+const priorFor = (id) => {
+  const raw = priorFailures && typeof priorFailures === 'object' &&
+    Object.prototype.hasOwnProperty.call(priorFailures, id) ? priorFailures[id] : null
+  const entry = raw && typeof raw === 'object' ? raw : {}
+  const n = entry.failures
+  const failures = Number.isInteger(n) && n >= 0 ? n : 0
+  const reason = typeof entry.reason === 'string' && entry.reason
+    ? entry.reason : 'the reason is in its checkpoint record'
+  return { failures, reason }
+}
+
 const stageOpts = (stage, label, phase, schema) => {
   const { model, effort } = models[stage]
   const opts = { label, phase, schema, model }
@@ -142,8 +159,14 @@ const verifierPrompt = (unit, art) =>
   QUOTING_NOTE
 
 const runUnit = async (unit) => {
-  let last = { reason: 'no attempt completed' }
-  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+  const prior = priorFor(unit.id)
+  if (prior.failures >= maxAttempts) {
+    return { id: unit.id, status: 'failed', attempts: 0,
+      reason: `attempt cap reached: rejected ${prior.failures} times already (maxAttempts ${maxAttempts})` }
+  }
+  let last = prior.failures ? { reason: prior.reason }
+    : { reason: 'no attempt completed' }
+  for (let attempt = prior.failures + 1; attempt <= maxAttempts; attempt++) {
     const art = await agent(workerPrompt(unit, attempt, last),
       stageOpts('worker', `write:${unit.id}`, 'Write', ARTIFACT))
     if (!art) { last = { reason: 'worker agent died before returning' }; continue }
@@ -156,7 +179,7 @@ const runUnit = async (unit) => {
     last = verdict || { reason: 'verifier agent died before returning' }
     log(`${unit.id}: attempt ${attempt} rejected (${last.reason})`)
   }
-  return { id: unit.id, status: 'failed', reason: last.reason, attempts: maxAttempts }
+  return { id: unit.id, status: 'failed', reason: last.reason, attempts: maxAttempts - prior.failures }
 }
 
 const describe = (stage) => {

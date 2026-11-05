@@ -22,11 +22,12 @@ This module owns that file's name, reads and writes, and keeps every unit
 record off it. estimate.py owns what goes in it.
 
 CLI:
-    python state.py todo    --units units.json --dir checkpoint [--limit N]
+    python state.py todo    --units units.json --dir checkpoint [--limit N] [--max-attempts 2]
+    python state.py failures --units units.json --dir checkpoint
     python state.py record  --dir checkpoint --id ID --status verified [...]
     python state.py report  --units units.json --dir checkpoint [--strict]
     python state.py claim   --dir checkpoint --id ID [--lease-seconds 1800]
-    python state.py release --dir checkpoint --id ID
+    python state.py release --dir checkpoint --id ID [--owner OWNER]
 """
 
 from __future__ import annotations
@@ -48,6 +49,9 @@ DONE = "verified"
 DEFAULT_LEASE_SECONDS = 1800
 # Seconds to wait between tries when Windows reports the file is in use.
 SHARING_RETRY_DELAYS = (0.01, 0.02, 0.04, 0.08)
+# How many verifier rejections a unit may collect, across every run, before
+# todo leaves it out. Matches maxAttempts in workflows/batch.js.
+DEFAULT_MAX_ATTEMPTS = 2
 
 _UNSAFE = re.compile(r"[^A-Za-z0-9._-]")
 _MAX_SLUG = 80
@@ -216,10 +220,15 @@ def record(checkpoint_dir, unit_id, status, artifact=None, reason=None, worker=N
     attempt = prior.get("attempt", 0)
     if status in ("written", "failed"):
         attempt = attempt + 1
+    # `attempt` counts both the writer's `written` and the verifier's `failed`,
+    # so one rejected pair adds 2. `failures` counts verifier rejections only,
+    # once each, and is what the attempt cap reads.
+    failures = failure_count(prior) + (1 if status == "failed" else 0)
     payload = {
         "unit_id": unit_id,
         "status": status,
         "attempt": attempt,
+        "failures": failures,
         "updated_at": now_iso(),
     }
     for key, value in (("artifact", artifact), ("reason", reason), ("worker", worker)):
@@ -234,8 +243,23 @@ def record(checkpoint_dir, unit_id, status, artifact=None, reason=None, worker=N
     for key in ("artifact", "worker"):
         if key not in payload and key in prior:
             payload[key] = prior[key]
+    # The last rejection's reason does outlive a retry's `written`: a resumed
+    # writer needs it, and `failures` hands it to batch.js.
+    if status == "failed" and reason is not None:
+        payload["last_rejection"] = reason
+    elif "last_rejection" in prior:
+        payload["last_rejection"] = prior["last_rejection"]
     _atomic_write_json(record_path(checkpoint_dir, unit_id), payload)
     return payload
+
+
+def failure_count(rec):
+    """The record's count of verifier rejections. Anything but a whole number
+    of zero or more, such as a hand-edited string, reads as 0."""
+    value = (rec or {}).get("failures", 0)
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        return 0
+    return value
 
 
 # Lists and dicts in a units file may nest this deep, counting the top-level list.
@@ -309,12 +333,54 @@ def reduce_dir(checkpoint_dir, units):
     return state
 
 
-def todo(checkpoint_dir, units, limit=None):
-    state = reduce_dir(checkpoint_dir, units)
-    pending = [u for u in units if state[u["id"]] != DONE]
+def _check_cap(max_attempts):
+    if isinstance(max_attempts, bool) or not isinstance(max_attempts, int) or max_attempts < 1:
+        raise ValueError("max_attempts must be a whole number of at least 1")
+
+
+def _unfinished(checkpoint_dir, units):
+    """Yield (unit, record or None) for every unit that is not verified."""
+    for unit in units:
+        rec = read_record(checkpoint_dir, unit["id"])
+        if not rec or rec["status"] != DONE:
+            yield unit, rec
+
+
+def capped(checkpoint_dir, units, max_attempts=DEFAULT_MAX_ATTEMPTS):
+    """Units that are not verified and have max_attempts or more rejections."""
+    _check_cap(max_attempts)
+    return [u for u, rec in _unfinished(checkpoint_dir, units) if failure_count(rec) >= max_attempts]
+
+
+def todo(checkpoint_dir, units, limit=None, max_attempts=DEFAULT_MAX_ATTEMPTS):
+    """Units that are not verified and still under the attempt cap.
+
+    A unit the verifier rejected max_attempts times, across every run, is
+    left out; `capped` lists those. Raise the cap or delete the unit's record
+    to run it again.
+    """
+    _check_cap(max_attempts)
+    pending = [u for u, rec in _unfinished(checkpoint_dir, units) if failure_count(rec) < max_attempts]
     if limit is not None:
         pending = pending[:limit]
     return pending
+
+
+def failure_counts(checkpoint_dir, units):
+    """{id: {"failures": n, "reason": text}} for unfinished units with a
+    rejection on record. batch.js takes this as priorFailures, so a resumed
+    unit continues its attempt count instead of starting at 1. The reason is
+    the last rejection's, or None if none was recorded.
+    """
+    out = {}
+    for unit, rec in _unfinished(checkpoint_dir, units):
+        count = failure_count(rec)
+        if count:
+            reason = rec.get("reason") if rec["status"] == "failed" else rec.get("last_rejection")
+            if not isinstance(reason, str):
+                reason = None
+            out[unit["id"]] = {"failures": count, "reason": reason}
+    return out
 
 
 def report(checkpoint_dir, units):
@@ -375,14 +441,17 @@ def _unlink_guard_if_same(guard, mark):
     _unlink(guard)
 
 
-def _remove_if_unchanged(path, seen):
-    """Delete the lock at path if it is still the file whose identity is seen.
+def _guard_path(path):
+    return path.with_name(path.name + ".steal")
 
-    Returns True when the lock is gone, so the caller may try to create it.
-    Only the caller holding the guard file may delete, so a caller whose
-    judgment is out of date cannot delete a lock someone stole meanwhile.
+
+def _take_guard(guard):
+    """Create the guard file with O_EXCL. Returns its mark, or None if taken.
+
+    A guard STEAL_GUARD_SECONDS or more off the clock was left by a caller
+    that died. This call removes it and still returns None, so the next call
+    can take it.
     """
-    guard = path.with_name(path.name + ".steal")
     try:
         fd = _retry_while_in_use(
             lambda: os.open(str(guard), os.O_CREAT | os.O_EXCL | os.O_WRONLY))
@@ -393,9 +462,9 @@ def _remove_if_unchanged(path, seen):
                 _unlink_guard_if_same(guard, mark)
         except OSError:
             pass
-        return False
+        return None
     except OSError:
-        return False
+        return None
     # A random token, so a fresh guard that reuses this one's inode and file
     # time still reads as a different guard.
     token = os.urandom(8).hex()
@@ -408,6 +477,19 @@ def _remove_if_unchanged(path, seen):
         os.close(fd)
     if mine is None:
         _unlink_guard_if_same(guard, _guard_mark(guard))
+    return mine
+
+
+def _remove_if_unchanged(path, seen):
+    """Delete the lock at path if it is still the file whose identity is seen.
+
+    Returns True when the lock is gone, so the caller may try to create it.
+    Only the caller holding the guard file may delete, so a caller whose
+    judgment is out of date cannot delete a lock someone stole meanwhile.
+    """
+    guard = _guard_path(path)
+    mine = _take_guard(guard)
+    if mine is None:
         return False
     try:
         try:
@@ -446,8 +528,10 @@ def claim(checkpoint_dir, unit_id, lease_seconds=DEFAULT_LEASE_SECONDS, owner=No
     it and loses that call, and it removes a guard only if the guard's
     identity and token still match what it read. Keep the lease above a
     unit's run time so a live holder is not judged stale. A holder that runs
-    past its lease and then releases can let a stealer and a fresh claimer
-    both win, since release does not take the guard.
+    past its lease and is robbed keeps working without knowing it. When it
+    releases with its owner, release leaves the thief's lock. A release
+    without an owner removes whatever lock is there, so a stealer and a
+    fresh claimer can both win.
 
     Creating the lock retries a few times while Windows reports it in use,
     then raises PermissionError. A directory the caller cannot write to
@@ -457,7 +541,9 @@ def claim(checkpoint_dir, unit_id, lease_seconds=DEFAULT_LEASE_SECONDS, owner=No
     """
     path = lock_path(checkpoint_dir, unit_id)
     path.parent.mkdir(parents=True, exist_ok=True)
-    body = json.dumps({"owner": owner or str(os.getpid()), "at": time.time()})
+    # An owner is stored as given, as a string, so release can name it. Only
+    # a missing owner falls back to the pid.
+    body = json.dumps({"owner": str(os.getpid()) if owner is None else str(owner), "at": time.time()})
     flags = os.O_CREAT | os.O_EXCL | os.O_WRONLY
 
     def create():
@@ -489,12 +575,87 @@ def claim(checkpoint_dir, unit_id, lease_seconds=DEFAULT_LEASE_SECONDS, owner=No
     return True
 
 
-def release(checkpoint_dir, unit_id):
-    """Drop a unit's lease. Returns True if this call removed the lock file,
-    and False if there was no lock file or it could not be removed."""
-    # _unlink retries while Windows reports the lock in use, which a virus
-    # scanner can cause for a moment.
-    return _unlink(lock_path(checkpoint_dir, unit_id))
+def _lock_owner(path):
+    """Read the lock at path. Returns (identity, owner), or None if unreadable.
+
+    The identity is taken before the read. The caller compares it with a
+    second stat after the read, so a file swapped in between is caught.
+    """
+    def read():
+        seen = _identity(os.stat(str(path)))
+        with open(str(path), "r", encoding="utf-8") as fh:
+            return seen, fh.read()
+    try:
+        seen, body = _retry_while_in_use(read)
+    except (OSError, ValueError):
+        return None
+    try:
+        data = json.loads(body)
+    except ValueError:
+        return None
+    owner = data.get("owner") if isinstance(data, dict) else None
+    return (seen, owner) if isinstance(owner, str) else None
+
+
+_RELEASE_TRIES = 20
+_RELEASE_WAIT_SECONDS = 0.05
+
+
+def release(checkpoint_dir, unit_id, owner=None):
+    """Drop a unit's lease. Returns True if this call removed the lock file.
+
+    With an owner, the lock goes only if its owner field matches. A holder
+    whose stale lease was stolen then leaves the thief's lock alone, so a
+    third run cannot claim a unit the thief is still working on. The release
+    takes the same guard file a stealer takes, reads the lock, compares the
+    owner, checks the lock is still that same file (inode, file time, size),
+    and only then deletes it. A stealer must hold the guard to delete a lock,
+    and a claimer only creates one when none exists, so no cooperating caller
+    can swap the lock between the check and the delete. The remaining window
+    is a guard that runs STEAL_GUARD_SECONDS past the clock, which another
+    caller treats as dead and clears; a release takes milliseconds.
+
+    Without an owner, the lock goes whoever holds it, as before ELI-893. That
+    keeps old callers working and brings the bug back for them, so pass the
+    owner you claimed with.
+
+    Returns False if there was no lock file, the owner did not match, the
+    lock is mid-write or unreadable, another caller held the guard for the
+    whole of about a second of retries, or the file could not be removed. The
+    owner is compared as a string, the way claim stores it. Reading and
+    removing the lock retry while Windows reports it in use, which a virus
+    scanner can cause for a moment.
+    """
+    path = lock_path(checkpoint_dir, unit_id)
+    if owner is None:
+        return _unlink(path)
+    if not path.exists():
+        return False
+    owner = str(owner)
+    guard = _guard_path(path)
+    # A stealer holds the guard for milliseconds, and the first try clears a
+    # guard a dead caller left, so a few short retries get it in normal use.
+    mine = None
+    for attempt in range(_RELEASE_TRIES):
+        if attempt:
+            time.sleep(_RELEASE_WAIT_SECONDS)
+        mine = _take_guard(guard)
+        if mine is not None:
+            break
+    if mine is None:
+        return False
+    try:
+        read = _lock_owner(path)
+        if read is None or read[1] != owner:
+            return False
+        try:
+            if _identity(os.stat(str(path))) != read[0]:
+                return False
+        except OSError:
+            return False
+        return _unlink(path)
+    finally:
+        _unlink_guard_if_same(guard, mine)
 
 
 def _main(argv=None):
@@ -509,6 +670,12 @@ def _main(argv=None):
     add_dir(p_todo)
     p_todo.add_argument("--units", required=True)
     p_todo.add_argument("--limit", type=_at_least(0), default=None)
+    p_todo.add_argument("--max-attempts", type=_at_least(1), default=DEFAULT_MAX_ATTEMPTS,
+                        help="leave out units the verifier rejected this many times (default %(default)s)")
+
+    p_fail = sub.add_parser("failures", help="print rejection counts of unfinished units")
+    add_dir(p_fail)
+    p_fail.add_argument("--units", required=True)
 
     p_rec = sub.add_parser("record", help="write one unit's status")
     add_dir(p_rec)
@@ -533,10 +700,12 @@ def _main(argv=None):
     p_rel = sub.add_parser("release", help="drop a lease")
     add_dir(p_rel)
     p_rel.add_argument("--id", required=True)
+    p_rel.add_argument("--owner", default=None,
+                       help="remove the lock only if this owner holds it (pass the owner you claimed with)")
 
     args = parser.parse_args(argv)
 
-    if args.command in ("todo", "report"):
+    if args.command in ("todo", "failures", "report"):
         try:
             units = load_units(args.units)
         except (OSError, ValueError) as exc:
@@ -544,7 +713,15 @@ def _main(argv=None):
             print("error: {}".format(exc), file=sys.stderr)
             return 1
     if args.command == "todo":
-        print(json.dumps(todo(args.dir, units, args.limit), indent=2))
+        print(json.dumps(todo(args.dir, units, args.limit, args.max_attempts), indent=2))
+        skipped = [u["id"] for u in capped(args.dir, units, args.max_attempts)]
+        if skipped:
+            print("skipped {} unit(s) the verifier rejected {} or more times: {}. Fix the spec, then "
+                  "rerun with a higher --max-attempts or delete their records.".format(
+                      len(skipped), args.max_attempts, ", ".join(skipped)), file=sys.stderr)
+        return 0
+    if args.command == "failures":
+        print(json.dumps(failure_counts(args.dir, units), indent=2))
         return 0
     if args.command == "record":
         print(json.dumps(record(args.dir, args.id, args.status, args.artifact,
@@ -564,14 +741,15 @@ def _main(argv=None):
         print("claimed" if won else "held-by-another")
         return 0 if won else 1
     if args.command == "release":
-        if release(args.dir, args.id):
+        if release(args.dir, args.id, args.owner):
             print("released")
             return 0
         # Exit 4: not 1 (held), 2 (argparse's usage error) or 3 (claim's
-        # cannot-create). The lease may have been stolen, or the lock is
-        # still there and blocks every other claimant until it goes stale.
-        print("cannot release {}: no lock file there, or it could not be removed".format(
-            lock_path(args.dir, args.id)), file=sys.stderr)
+        # cannot-create). The lease may have been stolen (another owner's
+        # lock, which stays, or no lock at all), or the lock is still there
+        # and blocks every other claimant until it goes stale.
+        print("cannot release {}: no lock file there, another owner holds it, or it could not be "
+              "removed".format(lock_path(args.dir, args.id)), file=sys.stderr)
         return 4
     return 2
 

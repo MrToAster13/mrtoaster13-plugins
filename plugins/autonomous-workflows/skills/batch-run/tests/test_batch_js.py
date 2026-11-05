@@ -1,4 +1,5 @@
-"""Tests for the model guard in workflows/batch.js.
+"""Tests that run workflows/batch.js under node: the model guard, the shell
+commands it puts in agent prompts, and the attempt count it carries across runs.
 
 batch.js is a workflow script with a top-level return, so it cannot be
 imported. These tests run the whole script under node in strict mode with stub
@@ -478,3 +479,55 @@ def test_the_authority_command_passes_hostile_paths_through_sh_unchanged():
     command = run["result"]["authority"].replace("<units.json>", "units.json")
     words = shell_words(command)
     assert words == [HOSTILE_STATE, "report", "--units", "units.json", "--dir", HOSTILE_DIR]
+
+
+# The same runner, except every verdict rejects the artifact.
+REJECTING_RUNNER = PROMPT_RUNNER.replace(
+    "{ ok: true, reason: 'holds up' }", "{ ok: false, reason: 'still wrong' }")
+
+
+def rejected_run(units, **extra):
+    payload = {"units": units, "worker": "w", "verifier": "v", "models": DEFAULTS}
+    payload.update(extra)
+    out = subprocess.run([NODE, "-e", REJECTING_RUNNER, str(BATCH_JS)],
+                         input=json.dumps(payload).encode(), timeout=60,
+                         stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    assert out.returncode == 0, out.stderr.decode()
+    return json.loads(out.stdout.decode())
+
+
+def test_rejecting_runner_differs_from_the_passing_one():
+    assert REJECTING_RUNNER != PROMPT_RUNNER
+
+
+def test_a_fresh_unit_gets_max_attempts_writer_and_verifier_pairs():
+    run = rejected_run([{"id": "a"}], maxAttempts=2)
+    assert len(run["prompts"]) == 4
+
+
+def test_batch_js_continues_from_the_stored_failure_count():
+    # ELI-893: a unit rejected once in an earlier run gets one more pair, not two.
+    run = rejected_run([{"id": "a"}, {"id": "b"}], maxAttempts=2,
+                       priorFailures={"a": {"failures": 1, "reason": "missing date"}})
+    a_prompts = [p for p in run["prompts"] if "--id 'a'" in p]
+    b_prompts = [p for p in run["prompts"] if "--id 'b'" in p]
+    assert len(a_prompts) == 2
+    assert len(b_prompts) == 4
+    assert "This is attempt 2." in a_prompts[0]
+    assert "missing date" in a_prompts[0]
+    failed = {f["id"]: f for f in run["result"]["failed"]}
+    assert set(failed) == {"a", "b"}
+
+
+def test_batch_js_spends_nothing_on_a_unit_already_at_the_cap():
+    run = rejected_run([{"id": "a"}], maxAttempts=2,
+                       priorFailures={"a": {"failures": 2, "reason": "x"}})
+    assert run["prompts"] == []
+    assert [f["id"] for f in run["result"]["failed"]] == ["a"]
+    assert "cap" in run["result"]["failed"][0]["reason"]
+
+
+@pytest.mark.parametrize("bogus", ["1", None, -1, True, 1.5, {"failures": "1"}])
+def test_batch_js_reads_a_bogus_prior_count_as_zero(bogus):
+    run = rejected_run([{"id": "a"}], maxAttempts=2, priorFailures={"a": bogus})
+    assert len(run["prompts"]) == 4

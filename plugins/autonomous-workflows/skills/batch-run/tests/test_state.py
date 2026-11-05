@@ -983,3 +983,260 @@ def test_units_with_moderately_nested_fields_still_load(tmp_path):
     path = tmp_path / "units.json"
     path.write_text(json.dumps([{"id": "a", "payload": _nested_list(50)}]), encoding="utf-8")
     assert [u["id"] for u in state.load_units(str(path))] == ["a"]
+
+
+# --- ELI-893: release checks the owner ------------------------------------
+
+def test_a_holders_late_release_leaves_the_thiefs_lock(batch):
+    # ELI-893 criterion 1. A's lease went stale and B stole it. A finishes
+    # late and releases; B's lock must survive, so a third run cannot claim.
+    _, _, cdir = batch
+    assert state.claim(cdir, "unit-20", owner="run-a") is True
+    path = state.lock_path(cdir, "unit-20")
+    old = time.time() - 3600
+    os.utime(str(path), (old, old))
+    assert state.claim(cdir, "unit-20", lease_seconds=60, owner="run-b") is True
+
+    assert state.release(cdir, "unit-20", "run-a") is False
+    assert json.loads(path.read_text(encoding="utf-8"))["owner"] == "run-b"
+    assert state.claim(cdir, "unit-20", lease_seconds=60, owner="run-c") is False
+
+    assert state.release(cdir, "unit-20", "run-b") is True
+    assert not path.exists()
+
+
+def test_release_by_the_owner_leaves_no_steal_guard(batch):
+    _, _, cdir = batch
+    assert state.claim(cdir, "unit-21", owner="run-a") is True
+    path = state.lock_path(cdir, "unit-21")
+    assert state.release(cdir, "unit-21", "run-a") is True
+    assert not path.exists()
+    assert not path.with_name(path.name + ".steal").exists()
+
+
+def test_release_leaves_a_lock_whose_body_is_not_yet_written(batch):
+    # A winner creates the lock and writes its owner a moment later. A release
+    # in between cannot tell whose it is, so it leaves it.
+    _, _, cdir = batch
+    path = state.lock_path(cdir, "unit-22")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("", encoding="utf-8")
+    assert state.release(cdir, "unit-22", "run-a") is False
+    assert path.exists()
+
+
+def test_release_does_not_remove_a_lock_swapped_in_after_the_owner_check(batch, monkeypatch):
+    # The lock is read and matches, then another caller replaces it before the
+    # removal. Release must notice the file changed and leave the new one.
+    _, _, cdir = batch
+    assert state.claim(cdir, "unit-23", owner="run-a") is True
+    path = state.lock_path(cdir, "unit-23")
+    real_open = open
+    swapped = []
+
+    def swap_after_read(file, *args, **kwargs):
+        fh = real_open(file, *args, **kwargs)
+        if str(file) == str(path) and not swapped:
+            swapped.append(True)
+            body = fh.read()
+            fh.close()
+            os.replace(str(path), str(path) + ".old")
+            path.write_text(json.dumps({"owner": "run-b", "at": time.time(), "pad": "x" * 40}),
+                            encoding="utf-8")
+            import io
+            return io.StringIO(body)
+        return fh
+
+    monkeypatch.setattr("builtins.open", swap_after_read)
+    assert state.release(cdir, "unit-23", "run-a") is False
+    monkeypatch.undo()
+    assert swapped
+    assert json.loads(path.read_text(encoding="utf-8"))["owner"] == "run-b"
+
+
+def test_the_release_cli_with_the_wrong_owner_exits_4_and_keeps_the_lock(batch):
+    _, _, cdir = batch
+    assert state.claim(cdir, "unit-24", owner="run-b") is True
+    result = run_cli("release", "--dir", str(cdir), "--id", "unit-24", "--owner", "run-a")
+    assert result.returncode == 4
+    assert b"cannot release" in result.stderr
+    assert state.lock_path(cdir, "unit-24").exists()
+    result = run_cli("release", "--dir", str(cdir), "--id", "unit-24", "--owner", "run-b")
+    assert result.returncode == 0
+    assert result.stdout.decode().strip() == "released"
+    assert not state.lock_path(cdir, "unit-24").exists()
+
+
+# --- ELI-893: a cap on attempts across resumes ----------------------------
+
+def _reject(cdir, unit_id, times):
+    for i in range(times):
+        state.record(cdir, unit_id, "written", artifact="out.md")
+        state.record(cdir, unit_id, "failed", reason="rejection {}".format(i + 1))
+
+
+def test_todo_leaves_out_a_unit_rejected_cap_many_times(batch):
+    # ELI-893 criterion 2.
+    units, _, cdir = batch
+    _reject(cdir, "unit-03", 2)
+    ids = [u["id"] for u in state.todo(cdir, units, max_attempts=2)]
+    assert "unit-03" not in ids
+    assert len(ids) == 29
+    assert [u["id"] for u in state.capped(cdir, units, max_attempts=2)] == ["unit-03"]
+
+
+def test_the_default_cap_matches_batch_js_max_attempts(batch):
+    units, _, cdir = batch
+    assert state.DEFAULT_MAX_ATTEMPTS == 2
+    _reject(cdir, "unit-03", 2)
+    assert "unit-03" not in [u["id"] for u in state.todo(cdir, units)]
+
+
+def test_a_unit_below_the_cap_stays_in_todo(batch):
+    units, _, cdir = batch
+    _reject(cdir, "unit-03", 1)
+    assert "unit-03" in [u["id"] for u in state.todo(cdir, units, max_attempts=2)]
+    assert state.capped(cdir, units, max_attempts=2) == []
+
+
+def test_a_written_record_without_a_rejection_does_not_count_toward_the_cap(batch):
+    # The writer records written; the session dies before the verifier runs.
+    # That is not a rejection, however many times it happens.
+    units, _, cdir = batch
+    for _ in range(3):
+        state.record(cdir, "unit-04", "written", artifact="out.md")
+    assert "unit-04" in [u["id"] for u in state.todo(cdir, units, max_attempts=2)]
+
+
+def test_each_rejection_counts_once(batch):
+    _, _, cdir = batch
+    _reject(cdir, "unit-05", 1)
+    assert state.read_record(cdir, "unit-05")["failures"] == 1
+    state.record(cdir, "unit-05", "written", artifact="out.md")
+    assert state.read_record(cdir, "unit-05")["failures"] == 1
+
+
+def test_a_unit_verified_after_rejections_is_done_not_capped(batch):
+    units, _, cdir = batch
+    _reject(cdir, "unit-06", 2)
+    state.record(cdir, "unit-06", "verified", reason="holds up")
+    assert "unit-06" not in [u["id"] for u in state.todo(cdir, units, max_attempts=2)]
+    assert state.capped(cdir, units, max_attempts=2) == []
+    assert state.report(cdir, units)["ids"]["verified"] == ["unit-06"]
+
+
+def test_raising_the_cap_lets_a_capped_unit_run_again(batch):
+    units, _, cdir = batch
+    _reject(cdir, "unit-07", 2)
+    assert "unit-07" in [u["id"] for u in state.todo(cdir, units, max_attempts=3)]
+
+
+@pytest.mark.parametrize("bogus", ["2", None, -1, True, 1.5])
+def test_a_hand_edited_failure_count_that_is_not_a_count_reads_as_zero(batch, bogus):
+    units, _, cdir = batch
+    path = state.record_path(cdir, "unit-08")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"unit_id": "unit-08", "status": "failed", "failures": bogus}),
+                    encoding="utf-8")
+    assert "unit-08" in [u["id"] for u in state.todo(cdir, units, max_attempts=1)]
+
+
+def test_a_cap_below_one_is_rejected(batch):
+    units, _, cdir = batch
+    with pytest.raises(ValueError, match="at least 1"):
+        state.todo(cdir, units, max_attempts=0)
+
+
+def test_the_todo_cli_skips_and_reports_capped_units(batch):
+    units, units_file, cdir = batch
+    _reject(cdir, "unit-09", 2)
+    result = run_cli("todo", "--units", str(units_file), "--dir", str(cdir), "--max-attempts", "2")
+    assert result.returncode == 0
+    ids = [u["id"] for u in json.loads(result.stdout.decode())]
+    assert "unit-09" not in ids and len(ids) == 29
+    assert b"unit-09" in result.stderr
+    result = run_cli("todo", "--units", str(units_file), "--dir", str(cdir), "--max-attempts", "3")
+    assert "unit-09" in [u["id"] for u in json.loads(result.stdout.decode())]
+
+
+def test_the_todo_cli_rejects_a_cap_below_one(batch):
+    _, units_file, cdir = batch
+    result = run_cli("todo", "--units", str(units_file), "--dir", str(cdir), "--max-attempts", "0")
+    assert result.returncode == 2
+
+
+def test_the_failures_cli_prints_counts_and_last_reason_for_unfinished_units(batch):
+    units, units_file, cdir = batch
+    _reject(cdir, "unit-10", 1)
+    _reject(cdir, "unit-11", 2)
+    state.record(cdir, "unit-11", "verified")
+    result = run_cli("failures", "--units", str(units_file), "--dir", str(cdir))
+    assert result.returncode == 0
+    assert json.loads(result.stdout.decode()) == {
+        "unit-10": {"failures": 1, "reason": "rejection 1"}}
+
+
+# --- ELI-893 review findings ----------------------------------------------
+
+def test_the_last_rejection_reason_survives_a_later_written_record(batch):
+    # Review finding 1. Rejected once, then the retry's writer records written
+    # and the session dies before the verifier. The resume must still hand
+    # the writer the rejection reason.
+    units, _, cdir = batch
+    _reject(cdir, "unit-12", 1)
+    state.record(cdir, "unit-12", "written", artifact="out.md")
+    assert state.failure_counts(cdir, units) == {
+        "unit-12": {"failures": 1, "reason": "rejection 1"}}
+
+
+def test_release_with_an_owner_clears_a_dead_stealers_guard_and_still_releases(batch):
+    # Review finding 2. A stealer died holding the guard. The holder's one
+    # release call must not fail on that guard.
+    _, _, cdir = batch
+    assert state.claim(cdir, "unit-25", owner="run-a") is True
+    path = state.lock_path(cdir, "unit-25")
+    guard = path.with_name(path.name + ".steal")
+    guard.write_text("dead", encoding="utf-8")
+    old = time.time() - 3600
+    os.utime(str(guard), (old, old))
+    assert state.release(cdir, "unit-25", "run-a") is True
+    assert not path.exists()
+    assert not guard.exists()
+
+
+def test_release_with_an_owner_waits_out_a_live_guard_briefly(batch, monkeypatch):
+    # Review finding 2. A live guard that goes away a moment later does not
+    # make the holder's release fail.
+    _, _, cdir = batch
+    assert state.claim(cdir, "unit-26", owner="run-a") is True
+    path = state.lock_path(cdir, "unit-26")
+    guard = path.with_name(path.name + ".steal")
+    guard.write_text("live", encoding="utf-8")
+    real_sleep = time.sleep
+
+    def guard_goes_away(seconds):
+        if guard.exists():
+            os.unlink(str(guard))
+        real_sleep(0)
+
+    monkeypatch.setattr(state.time, "sleep", guard_goes_away)
+    assert state.release(cdir, "unit-26", "run-a") is True
+    assert not path.exists()
+
+
+def test_release_matches_a_long_owner(batch):
+    # Review finding 3.
+    _, _, cdir = batch
+    owner = "o" * 5000 + "\U0001f600" * 500
+    assert state.claim(cdir, "unit-27", owner=owner) is True
+    assert state.release(cdir, "unit-27", owner) is True
+
+
+@pytest.mark.parametrize("owner", ["", 123])
+def test_release_matches_an_owner_claim_took_as_given(batch, owner):
+    # Review finding 4. claim used to swap an empty owner for its pid, which
+    # no later release could name.
+    _, _, cdir = batch
+    assert state.claim(cdir, "unit-28", owner=owner) is True
+    assert state.release(cdir, "unit-28", owner) is True
+    assert not state.lock_path(cdir, "unit-28").exists()

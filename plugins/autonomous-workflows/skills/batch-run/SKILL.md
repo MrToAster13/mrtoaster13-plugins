@@ -60,8 +60,18 @@ looks good returns yes every time.
    where nothing is verified yet, so there is no separate code path:
 
    ```
-   python <skill>/scripts/state.py todo --units <units.json> --dir <checkpoint>
+   python <skill>/scripts/state.py todo --units <units.json> --dir <checkpoint> --max-attempts 2
+   python <skill>/scripts/state.py failures --units <units.json> --dir <checkpoint>
    ```
+
+   `--max-attempts` is the same number you pass as `maxAttempts` in step 5
+   (default 2 for both). `todo` leaves out any unit the verifier has rejected
+   that many times across every run, and names those units on stderr. Tell
+   the user about them: they need a spec fix, not another paid retry. Raise
+   `--max-attempts` or delete a unit's record to run it again. `failures`
+   prints each unfinished unit's rejection count and last reason, which step
+   5 passes to the workflow so a resumed unit continues its count instead of
+   starting at attempt 1.
 
    Without `--resume` the user may want a clean run: ask before deleting
    checkpoint files, then delete and recompute. Never silently reuse state the
@@ -152,7 +162,8 @@ looks good returns yes every time.
        verifier: "...",              // the ## Verifier section
        checkpointDir: "<abs path>",
        statePath: "<skill>/scripts/state.py",
-       maxAttempts: 2,
+       maxAttempts: 2,               // same as step 2's --max-attempts
+       priorFailures: {...},         // the failures output from step 2, verbatim
        models: { worker: {...}, verifier: {...} }   // from load-config --or-default
      }
    })
@@ -254,20 +265,30 @@ valid, which is why its models must come from `load-config`.
   The on-disk checkpoint is what covers that, which is why both exist.
 - **A unit that fails verification twice needs a prompt fix, not another retry.**
   Two independent rejections usually means the spec is asking for something the
-  source material cannot support.
+  source material cannot support. The cap holds across resumes: each `failed`
+  record adds 1 to the record's `failures` count (a `written` record adds
+  nothing), and `todo` leaves out a unit once that count reaches
+  `--max-attempts`. A writer or verifier agent that dies without recording
+  does not count, so such a unit still gets retried on each resume.
 - **Concurrent runs of the same batch** are not prevented by default. If you
-  genuinely need that, wrap each unit in `state.py claim` / `release`. A single
-  workflow run dispatches each unit once and does not need it. `claim` exits 0
-  and prints `claimed` when the caller wins, exits 1 and prints
-  `held-by-another` when it loses, exits 2 on a usage error such as a negative
-  `--lease-seconds`, and exits 3 when it cannot create the lock file. Any other
-  error prints a Python traceback and also exits 1, so check for
-  `held-by-another` on stdout rather than the exit code alone. A stale lock
-  the caller cannot delete reads as held on every call. `release` exits 0 and
-  prints `released` when it removes the lock file. It exits 4 with a message
-  on stderr when there is no lock file, which can mean another run stole a
-  stale lease, or when the lock cannot be removed, which leaves the unit
-  locked until the lease goes stale.
+  genuinely need that, wrap each unit in `state.py claim --owner <run id>` /
+  `release --owner <run id>`, with the same owner on both. A single
+  workflow run dispatches each unit once and does not need it. A lock is aged
+  by its file time, so a lock someone just created counts as held even before
+  it is written. `claim` exits 0 and prints `claimed` when the caller wins,
+  exits 1 and prints `held-by-another` when it loses, exits 2 on a usage
+  error such as a negative `--lease-seconds`, and exits 3 when it cannot
+  create the lock file. Any other error prints a Python traceback and also
+  exits 1, so check for `held-by-another` on stdout rather than the exit code
+  alone. A stale lock the caller cannot delete reads as held on every call.
+  With `--owner`, `release` removes the lock only if that owner still holds
+  it, so a run whose stale lease another run stole leaves the thief's lock in
+  place. Without `--owner` it removes whatever lock is there, which can free
+  a unit another run is working on. `release` exits 0 and prints `released`
+  when it removes the lock file. It exits 4 with a message on stderr when
+  there is no lock file, when another owner holds it (both can mean another
+  run stole a stale lease), or when the lock cannot be removed, which leaves
+  the unit locked until the lease goes stale.
 - **Deleting a record file is the supported way to force a redo** of one unit.
 
 ## Layout
@@ -276,10 +297,13 @@ valid, which is why its models must come from `load-config`.
 - `scripts/handoff.py` - renders a handoff doc from the checkpoint dir, on the way back up.
 - `workflows/batch.js` - the fan-out: write, then refute, with one retry.
 - `scripts/estimate.py` - the cost projection, the model menu and the saved choice.
-- `tests/test_state.py` - the checkpoint store, mostly simulated interruptions.
+- `tests/test_state.py` - the checkpoint store, its CLI and the units loader,
+  mostly simulated interruptions.
 - `tests/test_estimate.py` - the projection, the menu and the saved choice.
-- `tests/test_batch_js.py` - the model guard in `batch.js` and its contract with
-  `load-config --or-default`, run under node; skipped when node is not on PATH.
+- `tests/test_batch_js.py` - runs `batch.js` under node: the model guard and
+  its contract with `load-config --or-default`, the prompts' shell commands
+  through sh, and the attempt count carried across runs. It skips when node
+  is not on PATH, and the sh tests skip when sh is not.
 - Run the tests with `python -m pytest tests/ -q` from the skill dir.
 - `examples/` - a sample units and spec pair. Its paths start with a
   `<project>` placeholder, so replace that with a real folder holding those

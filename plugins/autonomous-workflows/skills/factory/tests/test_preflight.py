@@ -19,6 +19,7 @@ FACTORY = Path(__file__).resolve().parents[1]
 PLUGIN = FACTORY.parents[1]
 REPO = PLUGIN.parents[1]
 PREFLIGHT = FACTORY / "scripts" / "preflight.py"
+IN_PLUGIN = (PLUGIN / ".claude-plugin" / "plugin.json").is_file()
 
 sys.path.insert(0, str(FACTORY / "scripts"))
 
@@ -189,6 +190,7 @@ def test_run_omits_systemroot_when_the_parent_has_none(monkeypatch, profile, tmp
     assert set(env) == {"HOME", "USERPROFILE", "PATH", "FACTORY_VAULT"}
 
 
+@pytest.mark.skipif(not IN_PLUGIN, reason="the preflight step is plugin-only text")
 def test_skill_md_runs_the_preflight_before_binding():
     text = (FACTORY / "SKILL.md").read_text(encoding="utf-8")
     phase0 = text.index("## Phase 0")
@@ -197,6 +199,7 @@ def test_skill_md_runs_the_preflight_before_binding():
     assert check != -1 and check < repo_step
 
 
+@pytest.mark.skipif(not IN_PLUGIN, reason="the READMEs exist only in the plugin repo's layout")
 @pytest.mark.parametrize("readme", [REPO / "README.md", PLUGIN / "README.md"])
 def test_readmes_name_every_prerequisite_and_its_source(readme):
     text = readme.read_text(encoding="utf-8")
