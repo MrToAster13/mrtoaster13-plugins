@@ -23,8 +23,9 @@ Run the full suite from the repo root:
 python -m pytest -q
 ```
 
-It collects the tests under `plugins/autonomous-workflows/skills/batch-run/tests/`
-and `plugins/autonomous-workflows/skills/factory/tests/`. `test_batch_js.py`
+It collects the tests under `plugins/autonomous-workflows/skills/batch-run/tests/`,
+`plugins/autonomous-workflows/skills/factory/tests/` and `tests/`. `tests/test_public_hygiene.py`
+fails when a tracked file names a private path or host. `test_batch_js.py`
 skips without `node` on PATH, so a run without node is not a full baseline.
 CI runs the same command in `.github/workflows/tests.yml`.
 

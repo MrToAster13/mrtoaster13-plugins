@@ -3,7 +3,7 @@
 Status: done. pl-1 merged through PR #6 (merge 3b94133) and pl-2 through PR #7 (merge 0d691c1). The review has no other pl-* cards for this repo, so the pl-* work is done. The follow-ups under Next and the open questions under Gotchas remain.
 
 ## Goal
-Elijah approved two fixes from the 2026-10-21 architecture review (`C:\Users\Elijah\AppData\Local\Temp\architecture-review-20261021-012113.html`, cards pl-1 and pl-2; notes in `C:\Users\Elijah\AppData\Local\Temp\arch-review\plugins-linear.md`). Both are in `plugins/autonomous-workflows/skills/batch-run/`. Each fix gets one commit, the full suite, an adversarial audit loop, then push and merge.
+Elijah approved two fixes from the 2026-10-21 architecture review (`%TEMP%\architecture-review-20261021-012113.html`, cards pl-1 and pl-2; notes in `%TEMP%\arch-review\plugins-linear.md`). Both are in `plugins/autonomous-workflows/skills/batch-run/`. Each fix gets one commit, the full suite, an adversarial audit loop, then push and merge.
 
 ## Done
 - pl-1 is commit 409a644, merged through PR #6 as 3b94133. It moves the model and effort policy into `scripts/estimate.py` alone.
@@ -27,7 +27,7 @@ Elijah approved two fixes from the 2026-10-21 architecture review (`C:\Users\Eli
 
 ## Key decisions
 - batch.js does not check which effort levels are valid. That list lives in estimate.py only. A hand-built `{"model": "opus", "effort": "banana"}` reaches agent(). SKILL.md says the models must come from load-config.
-- This work changed only this repo's `plugins/autonomous-workflows/skills/batch-run`. A second copy lives at `C:\Users\Elijah\.claude\skills\batch-run` in claude-config (last commit 8949d21, 2026-10-19). It still has the built-in batch.js defaults, no `--or-default` and the old config handling, and this work did not change it. That copy is self-contained, so nothing in it breaks, and nothing in this repo imports from it. Syncing it waits on Elijah's ownership answer, question (a) in handoff 001. Neither copy is canonical: they diverged both ways, and the `~/.claude` copy has hardening the plugin lacks. See the (a) design in handoff 003.
+- This work changed only this repo's `plugins/autonomous-workflows/skills/batch-run`. A second copy lives at `~/.claude/skills/batch-run` in claude-config (last commit 8949d21, 2026-10-19). It still has the built-in batch.js defaults, no `--or-default` and the old config handling, and this work did not change it. That copy is self-contained, so nothing in it breaks, and nothing in this repo imports from it. Syncing it waits on Elijah's ownership answer, question (a) in handoff 001. Neither copy is canonical: they diverged both ways, and the `~/.claude` copy has hardening the plugin lacks. See the (a) design in handoff 003.
 - pl-2 fixed only the collision with the config file and left the case collision between two unit ids (Next item 2) alone. Fixing that one redoes finished work, which goes beyond pl-2.
 
 ## Relevant files
