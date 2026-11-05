@@ -13,7 +13,8 @@ folders directly under home that have no `.git`.
 Read-only: no fetch, no push, no ref, branch, file or config change. Every
 git call runs with --no-optional-locks so `git status` does not rewrite the
 index, and with GIT_NO_LAZY_FETCH=1 so a partial clone does not fetch missing
-objects. Standard library only. Exit 0 on success, 2 on bad arguments or a
+objects. Status blanks every filter driver so no clean filter runs. git still
+refreshes a split index's sharedindex mtime on read. Standard library only. Exit 0 on success, 2 on bad arguments or a
 --root or --home that is not a directory.
 """
 
@@ -145,9 +146,20 @@ def _redact(url):
     scheme, authority, rest = m.groups()
     if "@" in authority:
         return scheme + authority.rsplit("@", 1)[1] + rest
-    if re.match(r"^[^:]*:(?!\d*$)", authority) and "@" in rest:
+    if not authority.startswith("[") and re.match(r"^[^:]*:(?!\d*$)", authority) and "@" in rest:
         return scheme + rest.rsplit("@", 1)[1]
     return url
+
+
+def _no_filters(path):
+    """-c overrides that blank every configured filter driver, so `git status`
+    re-hashing a touched file runs no clean filter (git-lfs, for one)."""
+    names = _lines(_git(path, "config", "--name-only", "--get-regexp", r"^filter\..*\.(clean|process)$"))
+    out = []
+    for driver in sorted({n[len("filter."):].rsplit(".", 1)[0] for n in names}):
+        for key in ("clean", "process", "required"):
+            out += ["-c", "filter.%s.%s=%s" % (driver, key, "false" if key == "required" else "")]
+    return out
 
 
 def _same_dir(a, b):
@@ -162,7 +174,7 @@ def repo_report(path):
     def required(*args):
         out = _git(path, *args)
         if out is None:
-            failed.append(args[0])
+            failed.append(next(a for a in args if not a.startswith("-") and "=" not in a))
             return ""
         return out
 
@@ -183,7 +195,8 @@ def repo_report(path):
     branch = head_ref[len("refs/heads/"):] if head_ref.startswith("refs/heads/") else "(detached)"
     # A bare repo, such as the .bare behind a worktrees-only layout, has no files
     # to be dirty, and its linked worktrees' rows show the shared stash.
-    dirty = 0 if bare else len(_lines(required("status", "--porcelain=v1", "--untracked-files=normal")))
+    dirty = 0 if bare else len(_lines(required(*_no_filters(path), "status", "--porcelain=v1",
+                                               "--untracked-files=normal")))
     stashes = 0 if bare else len(_lines(required("stash", "list")))
     wt_lines = _lines(required("worktree", "list", "--porcelain"))
     worktrees = [l[len("worktree "):] for l in wt_lines if l.startswith("worktree ")]

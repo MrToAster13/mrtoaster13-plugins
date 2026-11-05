@@ -30,7 +30,11 @@ its main repo is bare), stash
 count, `git worktree list` entries,
 the repo's own default (`refs/remotes/origin/HEAD`) and branches merged into
 it. It groups directories that share one origin URL and lists `*-backup-*`
-and `*-test-run*` folders under home with no `.git`. Stop after the report.
+and `*-test-run*` folders under home with no `.git`. Status runs with every
+configured filter driver blanked, so no clean filter such as git-lfs runs; a
+touched LFS file may then count as dirty. One write remains: in a split-index
+repo, git refreshes the mtime of `.git/sharedindex.*` on any index read, and
+no option turns that off. Stop after the report.
 Every cleanup it suggests needs its own yes, per row. The script's tests are
 in `tests/test_fleet_report.py`.
 

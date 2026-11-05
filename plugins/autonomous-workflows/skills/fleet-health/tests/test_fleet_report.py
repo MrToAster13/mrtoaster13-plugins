@@ -792,3 +792,27 @@ def test_eli1043_l1_a_tag_named_like_the_current_branch_keeps_it_out_of_stale(tm
 
     assert r["branch"] == "feat"
     assert r["stale_merged"] == []
+
+
+def test_eli1043_m1_status_does_not_run_a_configured_clean_filter(tmp_path):
+    repo = tmp_path / "filtered"
+    repo.mkdir()
+    git(repo, "init", "-q")
+    (repo / ".gitattributes").write_text("*.bin filter=probe\n")
+    (repo / "a.bin").write_text("x\n")
+    git(repo, "add", ".")
+    git(repo, "commit", "-q", "-m", "a")
+    marker = tmp_path / "filter-ran"
+    git(repo, "config", "filter.probe.clean", "touch '%s'; cat" % marker.as_posix())
+    git(repo, "config", "filter.probe.required", "true")
+    os.utime(str(repo / "a.bin"), (1, 1))
+
+    r = fleet_report.repo_report(repo)
+
+    assert not marker.exists()
+    assert r["error"] is None
+
+
+def test_eli1043_m3_an_ipv6_host_with_an_at_sign_in_the_path_is_kept():
+    url = "https://[2001:db8::1]/team-a/tool@v2.git"
+    assert fleet_report._redact(url) == url

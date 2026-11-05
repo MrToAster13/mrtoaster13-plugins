@@ -9,9 +9,9 @@
   "files": {
     ".github/check-shared-skills.py": "5a4296fe471ea68e7f60b95d8131f31d9905e38e1a11193ab884690406ac85bc",
     ".github/workflows/shared-skills.yml": "ca1c3eb9f39f83da74dc2b6272b7c15578b9201918838795cb55b2d513ef876c",
-    "plugins/autonomous-workflows/skills/fleet-health/SKILL.md": "ba5caaef224cf5b30d342ee9a30572e531c76769b0b80fdeee212e0c0f32a9da",
-    "plugins/autonomous-workflows/skills/fleet-health/scripts/fleet_report.py": "4ec75eec6260086d93cf3417dbd599930c5e25ac80c4fd353f257878b175505f",
-    "plugins/autonomous-workflows/skills/fleet-health/tests/test_fleet_report.py": "c8cc86b961edf24f8d9c34b788de62ab5612ffeddc47569dd6d24a0640b7dd31"
+    "plugins/autonomous-workflows/skills/fleet-health/SKILL.md": "8b3d17089780354a31ed1f6c8f1d52e37aa935eda72cbf2396295e9253c28fee",
+    "plugins/autonomous-workflows/skills/fleet-health/scripts/fleet_report.py": "fbb4f9411e4da9df0d4d8f5d573e1d1ea7a8946c59f1670896bf3e88594cc0ae",
+    "plugins/autonomous-workflows/skills/fleet-health/tests/test_fleet_report.py": "6f88118c6ae82af60f2e503e30cafa7542cb8e44816cf2930264edef28a40c99"
   },
   "note": "Written by claude-config bin/sync-shared-skills.py. Edit the skills in claude-config, not here."
 }
