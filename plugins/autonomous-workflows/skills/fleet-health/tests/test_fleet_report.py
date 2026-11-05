@@ -496,3 +496,53 @@ def test_eli1043_f7_a_missing_root_exits_2(tmp_path):
         fleet_report.main(["--root", str(missing), "--home", str(missing)])
 
     assert exc.value.code == 2
+
+
+# Regression tests for the ELI-1043 adversarial review of the fix.
+
+def test_eli1043_r1_a_folder_name_ending_in_a_space_is_not_a_false_error(tmp_path):
+    repo = tmp_path / "sp "
+    repo.mkdir()
+    git(repo, "init", "-q")
+    commit(repo, "a.txt")
+
+    r = fleet_report.repo_report(repo)
+
+    assert r["error"] is None
+    assert r["no_remote"] == 1
+
+
+def test_eli1043_r2_a_missing_default_home_does_not_block_an_explicit_root(tmp_path, monkeypatch):
+    root = tmp_path / "root"
+    root.mkdir()
+    monkeypatch.setenv("HOME", str(tmp_path / "nonexistent"))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path / "nonexistent"))
+
+    assert fleet_report.main(["--root", str(root)]) == 0
+
+
+def test_eli1043_r3_local_only_commits_are_counted_once_across_worktrees(tmp_path):
+    remote = bare_remote(tmp_path)
+    repo = clone(remote, tmp_path / "home" / "main")
+    git(repo, "switch", "-q", "-c", "feat")
+    commit(repo, "f1.txt")
+    commit(repo, "f2.txt")
+    git(repo, "switch", "-q", "master")
+    wt = tmp_path / "home" / "wt"
+    git(repo, "worktree", "add", "-q", str(wt), "-b", "wt-branch")
+    commit(wt, "w.txt")
+
+    main_r = fleet_report.repo_report(repo)
+    wt_r = fleet_report.repo_report(wt)
+
+    assert main_r["no_remote"] == 2
+    assert wt_r["no_remote"] == 1
+
+
+@pytest.mark.parametrize("a, b", [
+    ("http://h.com:80/o/r", "http://h.com/o/r"),
+    ("git://h.com:9418/o/r", "git://h.com/o/r"),
+    ("git+ssh://git@h.com:22/o/r", "git@h.com:o/r"),
+])
+def test_eli1043_r4_more_default_ports_normalize_away(a, b):
+    assert fleet_report.normalize_origin(a) == fleet_report.normalize_origin(b)
