@@ -310,8 +310,28 @@ def leftover_folders(home):
     return out
 
 
+def _submodules(path):
+    """Checked-out submodule dirs of path, from the gitlinks in its index."""
+    out = _git(path, "ls-files", "--stage", "-z") or ""
+    subs = [Path(path) / e.split("\t", 1)[1] for e in out.split("\0") if e.startswith("160000 ")]
+    return [d for d in subs if os.path.lexists(os.path.join(str(d), ".git"))]
+
+
 def build_report(roots, home, max_depth=MAX_DEPTH):
-    repos = [repo_report(p) for p in discover(roots, max_depth)]
+    # Status stays out of submodules, so every submodule needs its own row,
+    # including ones too deep or under a skipped folder for discover to find.
+    queue = list(discover(roots, max_depth))
+    seen = {os.path.normcase(str(Path(p).resolve())) for p in queue}
+    repos = []
+    while queue:
+        path = queue.pop(0)
+        repos.append(repo_report(path))
+        for sub in _submodules(path):
+            k = os.path.normcase(str(sub.resolve()))
+            if k not in seen:
+                seen.add(k)
+                queue.append(sub)
+    repos.sort(key=lambda r: r["path"].lower())
     return {"repos": repos, "duplicates": group_duplicates(repos),
             "leftovers": leftover_folders(home)}
 

@@ -869,3 +869,22 @@ def test_eli1043_n2_a_driver_name_with_an_equals_sign_is_blanked(tmp_path):
 
     assert not marker.exists()
     assert r["error"] is None
+
+
+# Regression tests for the ELI-1043 interrogate round 5 findings at d0ec8e0.
+
+@pytest.mark.parametrize("subpath", ["a/b/c/d/e/sub", "tmp/lib"])
+def test_eli1043_o1_a_submodule_discovery_misses_still_gets_its_own_row(tmp_path, subpath):
+    remote = bare_remote(tmp_path)
+    root = tmp_path / "root"
+    sup = root / "sup"
+    sup.mkdir(parents=True)
+    git(sup, "init", "-q")
+    commit(sup, "README")
+    git(sup, "-c", "protocol.file.allow=always", "submodule", "add", "-q", str(remote), subpath)
+    git(sup, "commit", "-q", "-m", "sub")
+    (sup / subpath / "README.md").write_text("edited")
+
+    reports = fleet_report.build_report([root], root)["repos"]
+
+    assert {key(r["path"]): r["dirty"] for r in reports}.get(key(sup / subpath)) == 1
