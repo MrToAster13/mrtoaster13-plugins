@@ -50,8 +50,8 @@ Each plugin owns its `.claude-plugin/plugin.json`, `skills/`, and README, so it 
 
 Some skills here also live in the author's private claude-config repo, which is
 their source. `.shared-skills.json` lists the files claude-config generates
-(`fleet-health` so far), and the `shared-skills` workflow fails when one of them
-is edited by hand. Change those in claude-config and regenerate.
+(`batch-run`, `factory`, `fleet-health` and `tdd-loop`), and the `shared-skills`
+workflow fails when one of them is edited by hand. Change those in claude-config and regenerate.
 
 ## License
 
