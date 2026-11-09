@@ -325,6 +325,36 @@ def test_a_units_file_nested_too_deep_is_a_clean_error(tmp_path):
     assert caught.value.__suppress_context__
 
 
+def _deep_list(depth):
+    """A list nested depth levels, built without recursion."""
+    value = []
+    for _ in range(depth - 1):
+        value = [value]
+    return value
+
+
+def test_a_deep_units_file_the_parser_accepts_is_still_one_clean_error(tmp_path, monkeypatch):
+    # ELI-1094: some Python builds parse 100000 brackets without RecursionError.
+    # The depth check must then raise the same clean error, with no context chained.
+    path = tmp_path / "units.json"
+    path.write_text("[]", encoding="utf-8")
+    monkeypatch.setattr(state, "_read_json", lambda _path: _deep_list(100_000))
+    with pytest.raises(ValueError, match="nested too deeply") as caught:
+        state.load_units(str(path))
+    assert caught.value.__suppress_context__
+
+
+def test_a_deep_config_the_parser_accepts_reads_as_unreadable(tmp_path, monkeypatch):
+    # ELI-1094: read_config returns None for a record nested past the units limit,
+    # even when the parser accepted it.
+    cdir = tmp_path / "checkpoint"
+    cdir.mkdir()
+    state.config_path(cdir).write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(state, "_read_json",
+                        lambda _path: {"worker": _deep_list(100_000), "verifier": {"model": "opus"}})
+    assert state.read_config(cdir) is None
+
+
 def test_a_record_with_a_byte_order_mark_still_counts_as_verified(batch):
     units, _, cdir = batch
     state.record(cdir, "unit-05", "verified")

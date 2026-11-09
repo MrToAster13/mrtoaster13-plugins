@@ -178,9 +178,14 @@ def read_config(checkpoint_dir):
     does not parse. Whether what it says is usable is for estimate.py to
     decide."""
     try:
-        return _read_json(config_path(checkpoint_dir))
+        data = _read_json(config_path(checkpoint_dir))
     except (OSError, ValueError, RecursionError):
         return None
+    # Some Python builds parse a deep record without RecursionError, and showing
+    # it later would raise one, so a record past the units limit reads as unparsed.
+    if _nesting_depth(data, _MAX_UNITS_DEPTH) > _MAX_UNITS_DEPTH:
+        return None
+    return data
 
 
 def write_config(checkpoint_dir, payload):
@@ -318,7 +323,7 @@ def load_units(units_path):
     # Some Python builds parse 100000 nested brackets without RecursionError,
     # so the depth check cannot rely on the parser raising it.
     if _nesting_depth(units, _MAX_UNITS_DEPTH) > _MAX_UNITS_DEPTH:
-        raise ValueError("units file is nested too deeply to parse")
+        raise ValueError("units file is nested too deeply to parse") from None
     if not isinstance(units, list):
         raise ValueError("units file must contain a JSON list")
     seen = set()
