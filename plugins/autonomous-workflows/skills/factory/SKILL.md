@@ -130,8 +130,8 @@ so the two have to agree before you run it:
 
 - The file names the vault tickets, or there is no file and the map gives this
   repo a ticket project: publish with `ticket.py new --title "<title>"
-  --project "<project>" --label ready-for-agent --parent <KEY>-<spec>
-  --body-file <file>`, one ticket at a time in dependency order, then
+  --project "<project>" --source blocks:<KEY>-<spec> --needs-elijah none
+  --label ready-for-agent --parent <KEY>-<spec> --body-file <file>`, one ticket at a time in dependency order, then
   `ticket.py relate <KEY>-<n> blocked_by <KEY>-<m>` for each blocker.
 - The file names GitHub, GitLab, or local while the map also names a ticket
   project: stop and ask which one is authoritative for this run. Never publish

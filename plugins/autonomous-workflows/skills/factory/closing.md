@@ -88,9 +88,10 @@ Blocks: <KEY-nnn, KEY-nnn, or "nothing">
 
 Approved once in Phase 0, then filed unedited.
 One new ticket in the same project per blocked question
-(`ticket.py new --title "<title>" --project "<project>" --body-file <file>`),
-linked as a blocker of the stopped ticket
-(`ticket.py relate <KEY>-stopped blocked_by <KEY>-blocker`).
+(`ticket.py new --title "<title>" --project "<project>" --source blocks:<KEY>-stopped
+--needs-elijah none --body-file <file>`), which also links it as a blocker of the
+stopped ticket. Pass `--needs-elijah login`, `payment` or `physical` when only
+the user can take that step.
 
 ```markdown
 Title: <the question, one line>
