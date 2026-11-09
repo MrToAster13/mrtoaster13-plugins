@@ -258,6 +258,20 @@ def test_a_mangled_config_reads_as_no_choice(tmp_path):
     assert estimate.load_config(cdir, or_default=True) == estimate.default_config()
 
 
+def test_a_deep_config_the_parser_accepts_still_reads_as_no_choice(tmp_path, monkeypatch):
+    # ELI-1094: on a Python build whose parser accepts the deep record, load_config
+    # must still return None instead of raising RecursionError while showing it.
+    cdir = tmp_path / "checkpoint"
+    cdir.mkdir()
+    state.config_path(cdir).write_text("{}", encoding="utf-8")
+    value = []
+    for _ in range(100_000):
+        value = [value]
+    monkeypatch.setattr(state, "_read_json",
+                        lambda _path: {"worker": value, "verifier": {"model": "opus"}})
+    assert estimate.load_config(cdir) is None
+
+
 def test_or_default_returns_the_default_record_and_writes_nothing(tmp_path):
     cdir = tmp_path / "checkpoint"
     config = estimate.load_config(cdir, or_default=True)
